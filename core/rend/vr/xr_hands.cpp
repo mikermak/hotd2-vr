@@ -320,12 +320,16 @@ void drawHands(const glm::mat4& viewProj, const glm::vec3& eyePos, const HandsVi
 	// metal with a sheen, skin and cotton matt
 	drawMesh(MeshFrame, viewProj, view.gunPose, 0.35f, 40.f);
 	drawMesh(MeshSlide, viewProj, glm::translate(view.gunPose, glm::vec3(0.f, 0.f, view.slide)), 0.45f, 50.f);
+	// The hero's gloves came out mirrored in the headset (the other hand a right glove on
+	// the left controller: the one around his staff seems to be his left), so both are
+	// drawn mirrored in x about their own origin; the staff itself stays as it is.
+	const glm::mat4 gloves = model.staff ? glm::scale(glm::mat4(1.f), glm::vec3(-1.f, 1.f, 1.f)) : glm::mat4(1.f);
 	// (the hero's fist sits where the player's own hand is, but made for a staff held
 	// upright: it looked better left out)
 	if (!model.staff || config::VrStaffHand)
-		drawMesh(MeshGunHand, viewProj, view.gunPose, 0.06f, 10.f);
+		drawMesh(MeshGunHand, viewProj, view.gunPose * gloves, 0.06f, 10.f);
 	if (view.otherHand)
-		drawMesh(MeshOpenHand, viewProj, view.handPose, 0.06f, 10.f);
+		drawMesh(MeshOpenHand, viewProj, view.handPose * gloves, 0.06f, 10.f);
 
 	glDisableVertexAttribArray(VERTEX_POS_ARRAY);
 	glDisableVertexAttribArray(VERTEX_NORM_ARRAY);
