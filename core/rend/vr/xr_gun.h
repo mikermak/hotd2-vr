@@ -34,17 +34,17 @@ constexpr glm::vec3 ModelPalm { 0.f, -0.018f, 0.062f };
 // 1.1.49; this app asks for 1.0.34).
 constexpr glm::vec3 HandPalm { 0.f, -0.078f, 0.068f };
 
-// The pistol drawn: the agent's own from the game (xr_hands.h) when there is one and
-// vr.GameHands is on, else the arcade gun. Model space is then gun space of xr_hands.h,
-// with its origin in the fist.
+// The pistol drawn: the agent's own from the game (xr_hands.h; in The Maze of the Kings
+// the hero's staff) when the running game has one and vr.GameHands is on, else the arcade
+// gun. Model space is then gun space of xr_hands.h, with its origin in the fist.
 bool gameGun();
 // The muzzle in model space, of whichever pistol it is.
 glm::vec3 gunMuzzle();
 
 // Model space -> gun space: the model's grip on the hand (palm, gun space), at `scale`
 // times the model's own size (arcade gun, vr.GunScale: 1 is 24.7 cm long, 17.1 cm tall;
-// game pistol, vr.HandScale: 1 is 20 cm long). Mirrored in x for the left hand (the game's
-// pistol is in a right hand).
+// game pistol, vr.HandScale: 1 is 20 cm long, the staff 1 m). Mirrored in x for the left
+// hand (the game's pistol is in a right hand).
 inline glm::mat4 gunPlacement(bool game, float scale, const glm::vec3& palm = HandPalm, bool mirror = false)
 {
 	glm::mat4 m = glm::translate(glm::mat4(1.f), palm);

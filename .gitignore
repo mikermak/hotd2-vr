@@ -33,3 +33,8 @@ hotd2-vr/fingergun/crash.log
 hotd2-vr/fingergun/*.task
 hotd2-vr/gun_model/*.png
 __pycache__/
+
+# hotd2-vr: models ripped from the game are Sega data, never commit them
+hands*.bin
+staff*.bin
+HND1*.bin

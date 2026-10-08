@@ -640,7 +640,7 @@ glm::mat4 eyeProjection(const XrFovf& fov)
 // Rebuilt game eye space -> headset local space, relative to the origin.
 glm::mat4 gameToWorld()
 {
-	const float s = config::VrWorldScale;
+	const float s = worldScale();
 	return glm::scale(glm::mat4(1.f), glm::vec3(s, -s, s));
 }
 
@@ -875,8 +875,7 @@ bool aimAtScene(const rend_context& ctx, const glm::vec3& o, const glm::vec3& d,
 	// exactly where the stock framing puts it. So the hit point goes on the screen at the
 	// stock framing: the shot lands where the dot is. The wider view around it is seen but
 	// can't be hit (as in the original game, where it wasn't on screen): aimOutside.
-	const glm::vec2 stockTan = cam.dcSize * 0.5f / (float)config::VrFocal;
-	const glm::vec2 tan = config::VrAimWidened ? cam.tanHalf : stockTan;
+	const glm::vec2 tan = config::VrAimWidened ? cam.tanHalf : cam.stockTan;
 	screen = glm::vec2(hit.x / (-hit.z * tan.x), hit.y / (-hit.z * tan.y)) * 0.5f + 0.5f;
 	if (onGameScreen(screen))
 		return true;
@@ -1014,7 +1013,7 @@ constexpr int OffScreen = -10000;
 // The other hand, with the game's pistol (xr_hands.h): the open hand follows the other
 // controller. Its grip squeezed near the back of the slide takes the slide, and pulling it
 // back all the way reloads, as the game knows it: a shot off the screen. Let go, the slide
-// springs home.
+// springs home. (The hero's staff has no slide: the other glove only follows the hand.)
 struct Slide
 {
 	bool held;
@@ -1054,7 +1053,7 @@ void updateOtherHand(XrTime time, int hand, bool tracked, const XrSpaceLocation&
 		const glm::vec3 inGun = glm::vec3(glm::inverse(restGun) * glm::vec4(handAt, 1.f));
 		const float squeeze = floatAction(gripAction, hand);
 		const bool squeezed = slide.squeezeWas ? squeeze > 0.35f : squeeze > 0.6f;
-		if (config::VrSlideReload && squeezed && !slide.squeezeWas && !slide.held)
+		if (config::VrSlideReload && model->travel > 0.f && squeezed && !slide.squeezeWas && !slide.held)
 		{
 			const glm::vec3 grabAt = glm::vec3(restGun * glm::vec4(model->grab + glm::vec3(0.f, 0.f, slide.back), 1.f));
 			const float reach = glm::distance(grabAt, handAt);
@@ -1148,7 +1147,7 @@ void updateGun(Gun& g, XrTime time, const XrSpaceLocation *locations, const bool
 		// rebuilt game eye space for the hit test.
 		const glm::vec3 o = glm::vec3(pose * placement * glm::vec4(gunMuzzle(), 1.f));
 		const glm::vec3 d = rot * glm::vec3(0, 0, -1);
-		const float s = config::VrWorldScale;
+		const float s = worldScale();
 		const glm::vec3 og = glm::vec3(o.x, -o.y, o.z) / s;
 		const glm::vec3 dg = glm::normalize(glm::vec3(d.x, -d.y, d.z));
 		float dist = -1.f;
@@ -1170,9 +1169,13 @@ void updateGun(Gun& g, XrTime time, const XrSpaceLocation *locations, const bool
 		const float kick = gunKick(sinceShot);
 		const float twist = ((g.shotCount * 2654435761u) >> 24) / 255.f - 0.5f;	// -0.5..0.5 per shot
 		const glm::vec3 hand = palm;
+		// A long one (the hero's staff, its head 75 cm out) tips up less: its muzzle rises no
+		// more than one 40 cm from the hand would. Every pistol here is shorter.
+		const float reach = glm::distance(glm::vec3(placement * glm::vec4(gunMuzzle(), 1.f)), hand);
+		const float tip = std::min(1.f, 0.4f / std::max(reach, 0.01f));
 		glm::mat4 recoilMat = glm::translate(glm::mat4(1.f), glm::vec3(0.f, 0.f, 0.035f * kick) + hand);
-		recoilMat = glm::rotate(recoilMat, glm::radians(18.f * kick), glm::vec3(1, 0, 0));
-		recoilMat = glm::rotate(recoilMat, glm::radians(6.f * twist * std::max(kick, 0.f)), glm::vec3(0, 1, 0));
+		recoilMat = glm::rotate(recoilMat, glm::radians(18.f * tip * kick), glm::vec3(1, 0, 0));
+		recoilMat = glm::rotate(recoilMat, glm::radians(6.f * tip * twist * std::max(kick, 0.f)), glm::vec3(0, 1, 0));
 		recoilMat = glm::translate(recoilMat, -hand);
 		GunView& view = g.view;
 		view.pose = pose * recoilMat * placement;
@@ -1299,8 +1302,8 @@ void updateLightgun(XrTime time)
 		slide.held = false;
 		leftStartWas = true;	// a left Start still held doesn't join at once
 	}
-	// The game runs itself to its game over scene for the agent's hands (hands_rip.h): its
-	// buttons are its own then.
+	// The game runs itself to its game over scene for the agent's hands, or its attract demo
+	// for the hero's staff (hands_rip.h): its buttons are its own then.
 	const bool preparing = hands::preparing();
 	if (!focused)
 	{
@@ -1601,7 +1604,7 @@ void captureIfRequested(GLuint fbo, int width, int height)
 	if (s == nullptr)
 		return;
 	const GameCamera cam = gameCamera(*ctx);
-	fprintf(s, "tan %d %d scale %d\n", (int)(cam.tanHalf.x * 1e6f), (int)(cam.tanHalf.y * 1e6f), (int)(config::VrWorldScale * 1e6f));
+	fprintf(s, "tan %d %d scale %d\n", (int)(cam.tanHalf.x * 1e6f), (int)(cam.tanHalf.y * 1e6f), (int)(worldScale() * 1e6f));
 	auto vertex = [&](u32 i, glm::vec3& p) {
 		if (i == RestartIndex || i >= ctx->verts.size())
 			return false;
@@ -1734,9 +1737,9 @@ bool frame()
 	}
 
 	// Let through whatever the emulator produced since the last headset frame. While it runs
-	// the game to its game over scene for the agent's hands (hands_rip.h), it goes as fast as
-	// it can: it waits for each of its frames to be taken, so keep taking them for most of
-	// the headset's frame.
+	// the game to its game over scene for the agent's hands (hands_rip.h), or its attract demo
+	// for the hero's staff, it goes as fast as it can: it waits for each of its frames to be
+	// taken, so keep taking them for most of the headset's frame.
 	const bool preparing = hands::preparing();
 	if (preparing)
 	{
@@ -1754,23 +1757,28 @@ bool frame()
 	wasPreparing = preparing;
 	Panel panel;
 	const glm::vec3 red(0.86f, 0.13f, 0.1f), white(0.92f), grey(0.66f);
+	const hands::Source *source = gameModelSource();
+	const bool staff = source != nullptr && source->kind == hands::Source::HerosStaff;
+	const char *title = staff ? "THE MAZE OF THE KINGS VR" : "THE HOUSE OF THE DEAD 2 VR";
 	if (preparing)
 	{
 		panel.lines = {
-			{ "THE HOUSE OF THE DEAD 2 VR", 0.085f, red },
+			{ title, 0.085f, red },
 			{ "", 0.03f, white },
-			{ "Taking the agent's hands and pistol from your game", 0.064f, white },
-			{ "Only this once: the game plays itself to its game over, fast.", 0.047f, grey },
+			{ staff ? "Making the hero's staff from your game" : "Taking the agent's hands and pistol from your game", 0.064f, white },
+			{ staff ? "Only this once: the game plays its attract demo by itself, fast."
+					: "Only this once: the game plays itself to its game over, fast.", 0.047f, grey },
 		};
 		panel.progress = hands::prepProgress();
 		panel.footer = "B: skip it for now (the arcade gun this time)";
 	}
 	else if (std::chrono::steady_clock::now() < doneUntil)
 		panel.lines = {
-			{ "THE HOUSE OF THE DEAD 2 VR", 0.085f, red },
+			{ title, 0.085f, red },
 			{ "", 0.03f, white },
-			{ "Got them. The agent's hands are yours.", 0.064f, white },
-			{ "Reload: grab the back of the pistol with your other hand and pull.", 0.047f, grey },
+			{ staff ? "Got it. The hero's staff is yours." : "Got them. The agent's hands are yours.", 0.064f, white },
+			{ staff ? "Reload: point it away from the screen and pull the trigger."
+					: "Reload: grab the back of the pistol with your other hand and pull.", 0.047f, grey },
 		};
 	const bool showPanel = !panel.lines.empty();
 

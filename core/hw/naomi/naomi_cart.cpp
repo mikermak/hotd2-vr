@@ -1,3 +1,4 @@
+// hotd2-vr: modified in 2026 by mikermak for the Quest VR mode (see "git log master..hotd2-vr").
 /*
 	This file is part of reicast.
 
@@ -245,8 +246,9 @@ static void loadMameRom(const std::string& path, const std::string& fileName, Lo
 			throw NaomiCartException(strprintf(T("Cannot open %s"), fileName.c_str()));
 	}
 
-	// Load the BIOS
-	naomi_cart_LoadBios(fileName.c_str());
+	// Load the BIOS (hotd2-vr: from the full path, so a merged set's own BIOS files are found
+	// in the game's archive, and its parent next to it)
+	naomi_cart_LoadBios(path.c_str());
 
 	// Now load the cartridge data
 	try {

@@ -2,6 +2,7 @@
 package com.flycast.emulator;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -12,6 +13,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Process;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.TypedValue;
@@ -23,19 +26,24 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.io.File;
+import java.util.List;
 
 /**
  * hotd2-vr: the setup panel. Shown in the headset's home when the game can't start yet: no
- * access to the files, or no game found. It says what's missing, step by step, and starts
- * the game in VR once it's all there.
+ * access to the files, or no game found, or more than one game to choose from. It says what's
+ * missing, step by step, and starts the game in VR once it's all there.
  */
 public class VrSetupActivity extends Activity
 {
+    /** The game picked here, for the VR activity (a path). */
+    public static final String EXTRA_GAME = "hotd2vr.game";
+
     private static final int RED = Color.rgb(217, 32, 26), TEXT = Color.rgb(230, 230, 230),
             SOFT = Color.rgb(160, 160, 164), GOOD = Color.rgb(96, 200, 110), BACK = Color.rgb(18, 18, 20);
 
     private TextView accessStatus, gameStatus;
-    private Button allow, play;
+    private Button allow;
+    private LinearLayout games;
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -63,12 +71,14 @@ public class VrSetupActivity extends Activity
         again.setOnClickListener(v -> refresh());
         page.addView(again, spaced(10));
 
-        play = button("Play");
-        play.setOnClickListener(v -> play());
-        page.addView(play, spaced(28));
+        // a Play button per game found
+        games = new LinearLayout(this);
+        games.setOrientation(LinearLayout.VERTICAL);
+        page.addView(games, spaced(20));
 
-        page.addView(text("Your own copy of the game, the European (PAL) or US version: nothing of the game "
-                + "comes with this app. Unofficial fan project, not affiliated with Sega.", 13, SOFT), spaced(22));
+        page.addView(text("Your own copies of the games: The House of the Dead 2 (European or US version) and The "
+                + "Maze of the Kings (arcade, as a MAME set: mok.zip with the folder mok next to it). Nothing of the "
+                + "games comes with this app. Unofficial fan project, not affiliated with Sega.", 13, SOFT), spaced(22));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(BACK);
@@ -87,7 +97,7 @@ public class VrSetupActivity extends Activity
     {
         boolean access = VrGames.canReadSharedStorage();
         VrGames.Scan scan = VrGames.scan(this);
-        boolean ready = scan.game != null;
+        boolean ready = !scan.games.isEmpty();
         if (access)
         {
             accessStatus.setText("Done.");
@@ -103,7 +113,10 @@ public class VrSetupActivity extends Activity
         }
         if (ready)
         {
-            gameStatus.setText("Found: " + shortPath(scan.game));
+            StringBuilder found = new StringBuilder(scan.games.size() == 1 ? "Found: " : "Found, pick one below:");
+            for (VrGames.Game g : scan.games)
+                found.append(scan.games.size() == 1 ? "" : "\n").append(shortPath(g.file));
+            gameStatus.setText(found);
             gameStatus.setTextColor(GOOD);
         }
         else
@@ -122,8 +135,13 @@ public class VrSetupActivity extends Activity
             gameStatus.setText(how);
             gameStatus.setTextColor(scan.incomplete != null || scan.archive != null ? RED : SOFT);
         }
-        play.setEnabled(ready);
-        play.setAlpha(ready ? 1f : 0.4f);
+        games.removeAllViews();
+        for (VrGames.Game g : scan.games)
+        {
+            Button play = button("Play " + g.title);
+            play.setOnClickListener(v -> play(g.file));
+            games.addView(play, spaced(8));
+        }
     }
 
     private void askForAccess()
@@ -138,14 +156,36 @@ public class VrSetupActivity extends Activity
         }
     }
 
-    private void play()
+    private void play(File game)
     {
+        // A game may still be running in the app's own process (the app opened again from the
+        // library while one played): the emulator has one game per process, and its task would
+        // only be brought back. So that process ends, and the game picked starts in a new one.
+        endGameProcess();
         // the app's launcher entry, which starts in VR
         Intent intent = new Intent(Intent.ACTION_MAIN);
         intent.setComponent(new ComponentName(this, "com.flycast.emulator.MainActivity"));
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra(EXTRA_GAME, game.getAbsolutePath());
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(intent);
         finish();
+    }
+
+    /** Ends the app's main process (this panel runs in one of its own), and waits for it. */
+    private void endGameProcess()
+    {
+        ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        List<ActivityManager.RunningAppProcessInfo> running = am != null ? am.getRunningAppProcesses() : null;
+        if (running == null)
+            return;
+        for (ActivityManager.RunningAppProcessInfo p : running)
+        {
+            if (p.pid == Process.myPid() || !getPackageName().equals(p.processName))
+                continue;
+            Process.killProcess(p.pid);
+            for (int i = 0; i < 50 && new File("/proc/" + p.pid).exists(); i++)
+                SystemClock.sleep(20);
+        }
     }
 
     private String shortPath(File f)

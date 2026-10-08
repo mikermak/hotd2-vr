@@ -14,7 +14,7 @@
 	Copyright 2026 mikermak. This file is part of Flycast and is distributed under the GNU GPL v2 or later.
 */
 #pragma once
-#include "vr/hands_build.h"
+#include "vr/hands_rip.h"
 #include <glm/glm.hpp>
 
 struct rend_context;
@@ -81,16 +81,20 @@ struct GameCamera
 	glm::vec2 tanHalf;
 	glm::vec2 dcSize;
 	float overlayW;
+	// tan of the half field of view the game's light-gun hit test uses (its stock view)
+	glm::vec2 stockTan;
 };
 GameCamera gameCamera(const rend_context& ctx);
 
-// The agent's parts in the game over scene, for the game being played (hands_rip.h), or
-// nullptr when its profile doesn't know them.
-const hands::Parts *gameHandsParts();
+// What the game being played makes its own model from (hands_rip.h: the agent's hands and
+// pistol, the hero's staff), or nullptr when its profile has none.
+const hands::Source *gameModelSource();
 
 // The game asks for player 2 in its corner ("PRESS START BUTTON"): player 2 isn't playing.
 // Seen in the last half second (when the game's profile knows the picture).
 bool player2Prompting();
+// Metres per game unit: vr.WorldScale, times the game profile's unit size next to HOTD2's.
+float worldScale();
 // ...the profile knows that picture (else player 2 can't be told out again).
 bool player2PromptKnown();
 

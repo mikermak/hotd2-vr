@@ -53,9 +53,12 @@
             </intent-filter>
         </activity-alias>
 
-        <!-- the setup panel: what's missing before the first game (VrSetupActivity) -->
+        <!-- the setup panel: what's missing before the first game (VrSetupActivity). In a
+             process of its own, so it can end a game still running in the app's own process
+             and start the one picked afresh. -->
         <activity
             android:name="com.flycast.emulator.VrSetupActivity"
+            android:process=":setup"
             android:exported="true"
             android:resizeableActivity="true"
             android:theme="@android:style/Theme.Material.NoActionBar">

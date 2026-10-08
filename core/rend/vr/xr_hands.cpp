@@ -1,14 +1,18 @@
 /*
-	The agent's hands and pistol from the game itself (hotd2-vr). See xr_hands.h.
+	The agent's hands and pistol from the game itself (hotd2-vr), or the hero's staff. See
+	xr_hands.h.
 
 	hands.bin in the data directory (little endian, made from the player's own game by
-	hands_rip.cpp, or on the PC by hotd2-vr/assets/rip_hands.py):
+	hands_rip.cpp, or on the PC by hotd2-vr/assets/rip_hands.py), and in the same format the
+	hero's staff of The Maze of the Kings, staff-mok.bin (only the running game's file is
+	read, again when another game starts):
 		"HND1", u32 version 1
 		f32 muzzle[3], grab[3], travel, onSlide[16] (column major)
 		u32 textures, each: u32 width, height, flags (1 clamp u, 2 clamp v, 4 mirror u,
 			8 mirror v, 16 alpha test), then width * height RGBA bytes
 		u32 meshes (frame, slide, gun hand, open hand), each: u32 parts, each: u32 texture,
 			u32 vertices, then the vertices: f32 position[3], normal[3], uv[2], u8 rgba[4]
+	A model without a slide (the staff) has travel 0 and no parts in the slide mesh.
 
 	Lit like the arcade gun (xr_gun.cpp): a fixed key light and a dim fill, so the hands
 	read as solid in the game's dark scenes, rather than with the light baked in that one
@@ -18,6 +22,7 @@
 */
 #include "xr_hands.h"
 #include "hands_rip.h"
+#include "rend/vr_reproject.h"
 #include "rend/gles/gles.h"
 #include "rend/gles/glcache.h"
 #include "cfg/option.h"
@@ -57,6 +62,7 @@ struct Model
 	std::vector<Texture> textures;
 	std::vector<Part> meshes[MeshCount];
 	std::vector<u8> vertices;
+	bool staff = false;	// the hero's staff (its fist off unless vr.StaffHand)
 };
 Model model;
 bool tried, loaded;
@@ -66,8 +72,13 @@ GLint uMvp = -1, uModel = -1, uEye = -1, uSpecular = -1, uShininess = -1, uAlpha
 
 bool load()
 {
-	// where older builds had it: the app's internal files
 	std::string path = hands::modelPath();
+	if (path.empty())
+	{
+		INFO_LOG(RENDERER, "XR: no model of its own for this game, the arcade gun it is");
+		return false;
+	}
+	// where older builds had it: the app's internal files
 	FILE *f = nowide::fopen(path.c_str(), "rb");
 	if (f == nullptr && !hands::legacyModelPath().empty())
 	{
@@ -148,8 +159,10 @@ bool load()
 		model = Model();
 		return false;
 	}
-	NOTICE_LOG(RENDERER, "XR: the agent's hands and pistol from %s (%zu textures, %zu vertices)", path.c_str(),
-			model.textures.size(), model.vertices.size() / VertexSize);
+	const hands::Source *source = gameModelSource();
+	model.staff = source != nullptr && source->kind == hands::Source::HerosStaff;
+	NOTICE_LOG(RENDERER, "XR: the game's own model from %s (%zu textures, %zu vertices%s)", path.c_str(),
+			model.textures.size(), model.vertices.size() / VertexSize, model.info.travel > 0.f ? "" : ", no slide");
 	return true;
 }
 
@@ -272,7 +285,7 @@ const HandsModel *handsModel()
 {
 	if (hands::takeNewModel())
 	{
-		// just made from the game: in with it
+		// just made from the game, or another game's: in with it
 		termHands();
 		model = Model();
 		tried = false;
@@ -307,7 +320,10 @@ void drawHands(const glm::mat4& viewProj, const glm::vec3& eyePos, const HandsVi
 	// metal with a sheen, skin and cotton matt
 	drawMesh(MeshFrame, viewProj, view.gunPose, 0.35f, 40.f);
 	drawMesh(MeshSlide, viewProj, glm::translate(view.gunPose, glm::vec3(0.f, 0.f, view.slide)), 0.45f, 50.f);
-	drawMesh(MeshGunHand, viewProj, view.gunPose, 0.06f, 10.f);
+	// (the hero's fist sits where the player's own hand is, but made for a staff held
+	// upright: it looked better left out)
+	if (!model.staff || config::VrStaffHand)
+		drawMesh(MeshGunHand, viewProj, view.gunPose, 0.06f, 10.f);
 	if (view.otherHand)
 		drawMesh(MeshOpenHand, viewProj, view.handPose, 0.06f, 10.f);
 

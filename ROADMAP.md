@@ -54,8 +54,9 @@ which has to be tested well before it goes out.
 
 ## Later, maybe
 
-- Other Dreamcast light gun games (Confidential Mission, Death Crimson OX) run on the same
-  Flycast base, so they're the most likely next games.
+- **The Maze of the Kings** (NAOMI): built, being tested.
+- Other Dreamcast and NAOMI light gun games (Confidential Mission, Death Crimson OX, Ninja
+  Assault, Gun Survivor 2) run on the same Flycast base, so they're the most likely next games.
 - The House of the Dead 1 is an arcade (Model 2) and Saturn game, not a Dreamcast one, so it
   would be a separate project. [port0r](https://github.com/jacquesdupontd/port0r) is
   already working on it.

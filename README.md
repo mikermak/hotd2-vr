@@ -181,6 +181,54 @@ adb shell run-as com.flycast.emulator.vr mkdir -p files/games
 adb exec-in run-as com.flycast.emulator.vr sh -c "cat > files/games/hotd2.chd" < hotd2.chd
 ```
 
+## The Maze of the Kings (new, experimental)
+
+Sega's NAOMI light-gun game from 2002 (Hitmaker, the HOTD team) works too, with its own
+profile: its view is widened in the game itself (the maze from 60 to 90 degrees, the story
+from 40 to 60), the gun's calibration is kept neutral so shots land on the dot, the HUD and
+subtitles go on the panel, the menus (drawn in layers of depth) flat on it, and the game's own
+shot flash and the floating "PRESS 2P START" are gone. Two guns work as in HOTD2. First played
+in the headset, then again with the staff and the two fixes below; only `vr.StaffHand` is
+new and not tried there yet.
+
+Put your own MAME set in the headset's Download folder: `mok.zip` (with its key
+`317-0333-com.pic`, and the NAOMI BIOS in it or as `naomi.zip` next to it) and the folder `mok`
+with the disc, `gds-0022.chd` (a `.cue` or `.gdi` of it works too). With more than one game on
+the headset, the setup panel asks which one to play.
+
+**The hero's staff.** The heroes carry a staff, not a gun, and so do you: the hero's own, head
+forward, with his left glove on your other hand. Like the agent's hands in
+HOTD2, the app makes it from your game the first time it starts: the game plays its attract
+demo by itself, fast and without input, up to the first frame with the hero and his staff whole
+in it (about half a minute of the game's time, under 20 seconds on the PC), behind a panel that
+says so. B skips it (the arcade gun then, and another go next time). It goes into `staff-mok.bin`
+next to `hands.bin`; each game has its own and never shows the other's. It is shortened to
+about 1 m (the game's is 1.4 m: the shaft behind the fist is cut down to a hand's width, its
+gold tail put back on there); grip + thumbstick left/right makes it bigger or smaller
+(`vr.HandScale`). There's no slide to rack: reload by pointing away from the screen and
+pulling the trigger. His right glove around it is left out: the game made that fist for a staff
+held upright like a walking stick, so with the staff pointing forward its wrist pointed at the
+floor (`vr.StaffHand` brings it back).
+
+Fixed since the first go in the headset:
+- Streaks over the floor. The game clips its 3D at W 1.0 (the floor under the camera, the walls
+  beside it, the desert's ground and sky), right where the 2D plane was, so the corners it cut
+  there were pinned onto the plane. Its 2D plane is now at its HUD's W, 1.082.
+- People beside the camera in the story scenes went missing when you turned your head: the
+  game culls models against its own frame, with a margin of half a bounding sphere (the `0.5`
+  at `0x8C08DC4C`). Made 4, they are drawn too (about a third more polygons in the story; the
+  game's own frame stays the same).
+
+How it was worked out (PC: `vr.DebugShots`, rips and RAM dumps): its field of view comes from
+camera data, not code, as one angle the projection builder halves; three instructions of the
+builder (`0x8C08D8EE`) make that three quarters instead. Its light-gun hit test keeps the stock
+focal (`0x0C0E7248`), which the aim follows. The staff is one model with one texture (a head
+piece and a shaft, 66 polygons), the gloves part of the hero's body texture; the app takes the
+rod his right glove is around, whole (its 66 polygons with all their 514 corners, and nothing of
+it or the gloves on the near plane, which keeps the polygons it cuts), stands it along its axis
+with the head forward and the ears of the animal head on it up, and fits his left glove onto
+the mirror image of the right one (`hands_build.cpp`, `buildStaff`).
+
 ## Options
 
 Settings live in `/sdcard/Android/data/com.flycast.emulator.vr/files/emu.cfg` (PC: `emu.cfg`
@@ -194,9 +242,10 @@ next to `flycast.exe`), under `[config]`. The useful ones:
 | `vr.Laser` | yes | laser line and dot |
 | `vr.ShowGun` | yes | the gun model |
 | `vr.GunScale` | 0.68 | size of the gun, times the 25 cm arcade gun it is modelled on (also set with grip + thumbstick) |
-| `vr.GameHands` | yes | the agent's hands and pistol (made from the game at the first start) |
-| `vr.HandScale` | 1 | their size: 1 is a 20 cm pistol (also set with grip + thumbstick) |
+| `vr.GameHands` | yes | the agent's hands and pistol, or the hero's staff (made from the game at the first start) |
+| `vr.HandScale` | 1 | their size: 1 is a 20 cm pistol, a 1 m staff (also set with grip + thumbstick) |
 | `vr.SlideReload` | yes | rack the slide with the other hand to reload |
+| `vr.StaffHand` | no | the hero's glove around his staff (The Maze of the Kings) |
 | `vr.DropShotMarker` | yes | hide the game's own 2D shot flash after shots into the 3D scene (with `no` it shows at the stock-framed spot, not where the shot landed) |
 | `vr.DualWield` | yes | the left controller's ≡ lets player 2 join with a gun in your left hand |
 | `vr.HideP2Prompt` | yes | no "PRESS START BUTTON / CREDIT(S)" for player 2 in a one-player game |
@@ -223,9 +272,11 @@ next to `flycast.exe`), under `[config]`. The useful ones:
   and the light gun ray cast.
 - `core/rend/vr/xr_gun.*`, `gun_model.h`: the gun, its effects and shaders.
 - `core/rend/vr/xr_hands.*`: the agent's hands and pistol from `hands.bin`, with the
-  slide that moves. The other hand's grip and the rack are in `xr_host.cpp`.
+  slide that moves, or the hero's staff from `staff-mok.bin` (only the running game's file).
+  The other hand's grip and the rack are in `xr_host.cpp`.
 - `core/rend/vr/hands_rip.*`, `hands_build.*`: the run to the game over scene and the
-  model made from it (the C++ twin of `hotd2-vr/assets/rip_hands.py`).
+  model made from it (the C++ twin of `hotd2-vr/assets/rip_hands.py`); in The Maze of the
+  Kings the run through its attract demo and the staff.
 - `core/rend/vr/xr_panel.*`: a text panel in the headset (the hands run).
 - `shell/android-studio/.../VrSetupActivity.java`, `VrGames.java`: the setup panel and
   finding the game on the headset.

@@ -199,11 +199,16 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
         });
     }
 
-    // hotd2-vr: the player's game (VrGames), or null
+    // hotd2-vr: the game to start: the one picked on the setup panel, or the only one there is
+    // (null: the setup panel, to find one or to pick one)
     private String findVrGame()
     {
-        File game = VrGames.scan(this).game;
-        return game != null ? game.getAbsolutePath() : null;
+        Intent intent = getIntent();
+        String picked = intent != null ? intent.getStringExtra(VrSetupActivity.EXTRA_GAME) : null;
+        if (picked != null && new File(picked).isFile())
+            return picked;
+        VrGames.Scan scan = VrGames.scan(this);
+        return scan.games.size() == 1 ? scan.game.getAbsolutePath() : null;
     }
 
     // hotd2-vr: the setup panel, in the headset's home (an immersive app opens a panel that way)

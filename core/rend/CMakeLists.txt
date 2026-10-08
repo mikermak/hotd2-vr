@@ -14,6 +14,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         transform_matrix.h
         vr_reproject.cpp
         vr_reproject.h
+        vr/debug_shots.cpp
         vr/hands_build.cpp
         vr/hands_build.h
         vr/hands_rip.cpp

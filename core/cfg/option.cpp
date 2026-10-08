@@ -110,7 +110,9 @@ Option<bool> VrShowGun("vr.ShowGun", true);	// a gun in the shooting hand
 Option<float> VrGunScale("vr.GunScale", 0.68f);	// its size, times the model's (24.7 cm long); 0.68: 17 cm, a compact pistol
 Option<bool> VrGameHands("vr.GameHands", true);	// the agent's own hands and pistol from the game, when files/hands.bin is there
 Option<float> VrHandScale("vr.HandScale", 1.f);	// their size, times the ripped model's (a 20 cm pistol)
-Option<bool> VrSlideReload("vr.SlideReload", true);	// with them, the other hand racks the slide to reload
+Option<bool> VrSlideReload("vr.SlideReload", true);
+Option<bool> VrStaffHand("vr.StaffHand", false);	// the hero's glove around his staff (The Maze of the Kings)	// with them, the other hand racks the slide to reload
+Option<int> VrDebugShots("vr.DebugShots", 0);	// PC test aid: a screenshot every N seconds of game time (0: off)
 Option<bool> VrDualWield("vr.DualWield", true);	// the left controller's Start: player 2 joins, a gun in each hand
 Option<bool> VrHideP2Prompt("vr.HideP2Prompt", true);	// no "PRESS START BUTTON" for player 2 floating in the room
 Option<bool> VrHandsPrep("vr.HandsPrep", false);	// PC: with no hands model, run the game to its game over scene for one (the headset always does)

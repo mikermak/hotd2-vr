@@ -14,19 +14,35 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * hotd2-vr: finding the player's own copy of the game on the headset. First the app's own
- * folders (files/games, internal and on the shared storage), then, with "All files access",
- * the Download folder and the rest of the shared storage. A .cue or .gdi only counts when
- * the tracks it lists are next to it; a packed game (.zip, .7z) is noticed to tell the
- * player to unpack it.
+ * hotd2-vr: finding the player's own games on the headset. First the app's own folders
+ * (files/games, internal and on the shared storage), then, with "All files access", the
+ * Download folder and the rest of the shared storage. A .cue or .gdi only counts when the
+ * tracks it lists are next to it; a packed game (.zip, .7z) is noticed to tell the player to
+ * unpack it. Arcade (NAOMI) games are MAME sets: the game's zip, with its GD-ROM image in a
+ * folder of the same name next to it.
  */
 public final class VrGames
 {
     private VrGames() {}
 
+    /** A game that can start. */
+    public static final class Game
+    {
+        public final String title;
+        public final File file;
+
+        Game(String title, File file)
+        {
+            this.title = title;
+            this.file = file;
+        }
+    }
+
     public static final class Scan
     {
-        /** The disc image to start, or null. */
+        /** The games found, the best first (The House of the Dead by its name). */
+        public final List<Game> games = new ArrayList<>();
+        /** The game to start when there's one, or null. */
         public File game;
         /** A disc image whose tracks aren't all there (when there's no good one), and what's missing. */
         public File incomplete;
@@ -34,6 +50,11 @@ public final class VrGames
         /** A packed game, when there's no disc image. */
         public File archive;
     }
+
+    /** The arcade sets the VR mod knows: MAME name, title, and the GD-ROM image next to it. */
+    private static final String[][] ARCADE = {
+        { "mok", "The Maze of the Kings", "gds-0022" },
+    };
 
     private static final String[] IMAGES = { ".cue", ".gdi", ".chd", ".cdi" };
     private static final String[] ARCHIVES = { ".zip", ".7z", ".rar" };
@@ -49,23 +70,24 @@ public final class VrGames
     public static Scan scan(Context context)
     {
         Scan scan = new Scan();
-        List<File> own = new ArrayList<>();
-        list(new File(context.getFilesDir(), "games"), 0, own);
+        List<File> found = new ArrayList<>();
+        list(new File(context.getFilesDir(), "games"), 1, found);
         File external = context.getExternalFilesDir(null);
         if (external != null)
-            list(new File(external, "games"), 0, own);
-        if (pick(own, scan))
-            return scan;
-        if (!canReadSharedStorage())
-            return scan;
-        File root = Environment.getExternalStorageDirectory();
-        List<File> download = new ArrayList<>();
-        list(new File(root, Environment.DIRECTORY_DOWNLOADS), 3, download);
-        if (pick(download, scan))
-            return scan;
-        List<File> elsewhere = new ArrayList<>();
-        list(root, 2, elsewhere);
-        pick(elsewhere, scan);
+            list(new File(external, "games"), 1, found);
+        if (canReadSharedStorage())
+        {
+            File root = Environment.getExternalStorageDirectory();
+            list(new File(root, Environment.DIRECTORY_DOWNLOADS), 3, found);
+            List<File> elsewhere = new ArrayList<>();
+            list(root, 2, elsewhere);
+            for (File f : elsewhere)
+                if (!found.contains(f))
+                    found.add(f);
+        }
+        collect(found, scan);
+        if (!scan.games.isEmpty())
+            scan.game = scan.games.get(0).file;
         return scan;
     }
 
@@ -106,12 +128,53 @@ public final class VrGames
         return name.contains("house of the dead") || name.contains("hotd") ? 1 : 0;
     }
 
-    private static boolean pick(List<File> found, Scan scan)
+    /** An arcade set's title, when it is one the mod knows and its GD-ROM is next to it. */
+    private static String arcadeTitle(File zip)
     {
-        File best = null;
+        String name = zip.getName().toLowerCase(Locale.ROOT);
+        for (String[] set : ARCADE)
+        {
+            if (!name.equals(set[0] + ".zip") && !name.equals(set[0] + ".7z"))
+                continue;
+            File dir = new File(zip.getParentFile(), set[0]);
+            for (String ext : new String[] { ".chd", ".cue", ".gdi" })
+                if (new File(dir, set[2] + ext).isFile())
+                    return set[1];
+        }
+        return null;
+    }
+
+    /** A disc image's title: its file name without the extension and the tags in brackets. */
+    private static String discTitle(File f)
+    {
+        String name = f.getName();
+        int dot = name.lastIndexOf('.');
+        if (dot > 0)
+            name = name.substring(0, dot);
+        name = name.replaceAll("\\s*[\\(\\[][^\\)\\]]*[\\)\\]]", "").trim();
+        // "House of the Dead 2, The" -> "The House of the Dead 2"
+        if (name.endsWith(", The"))
+            name = "The " + name.substring(0, name.length() - 5);
+        return name.isEmpty() ? f.getName() : name;
+    }
+
+    private static void collect(List<File> found, Scan scan)
+    {
+        List<File> discs = new ArrayList<>();
         for (File f : found)
         {
-            if (!endsWith(f.getName(), IMAGES))
+            if (endsWith(f.getName(), ARCHIVES))
+            {
+                String title = arcadeTitle(f);
+                if (title != null)
+                    scan.games.add(new Game(title, f));
+                else if (scan.archive == null || score(f) > score(scan.archive))
+                    scan.archive = f;
+                continue;
+            }
+            // the GD-ROM image of an arcade set isn't a game of its own
+            File parent = f.getParentFile();
+            if (parent != null && isArcadeFolder(parent))
                 continue;
             List<String> missing = missingTracks(f);
             if (!missing.isEmpty())
@@ -124,18 +187,25 @@ public final class VrGames
                 }
                 continue;
             }
-            if (best == null || score(f) > score(best))
-                best = f;
+            discs.add(f);
         }
-        if (best != null)
-        {
-            scan.game = best;
-            return true;
-        }
-        if (scan.archive == null)
-            for (File f : found)
-                if (endsWith(f.getName(), ARCHIVES) && (scan.archive == null || score(f) > score(scan.archive)))
-                    scan.archive = f;
+        // The House of the Dead first, then the rest
+        discs.sort((a, b) -> score(b) - score(a));
+        List<Game> games = new ArrayList<>();
+        for (File f : discs)
+            games.add(new Game(discTitle(f), f));
+        games.addAll(scan.games);
+        scan.games.clear();
+        scan.games.addAll(games);
+        if (!scan.games.isEmpty())
+            scan.archive = null;
+    }
+
+    private static boolean isArcadeFolder(File dir)
+    {
+        for (String[] set : ARCADE)
+            if (dir.getName().equalsIgnoreCase(set[0]))
+                return true;
         return false;
     }
 

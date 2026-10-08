@@ -11,6 +11,17 @@
 		hand space   the open left hand, fingers along -z, palm towards +x, thumb up,
 		             origin just off the palm
 
+	The hero's staff in The Maze of the Kings (buildStaff) goes the same way, from its attract
+	demo or story intro: of the rods in view (each a head piece and a shaft on one line) the
+	one with his right glove around it, whole (every polygon and corner, none of them cut off
+	by the game's near plane), and his left glove. In staff space (gun space
+	for xr_hands) the rod lies along z with its head forward (-z), the ears of the animal head
+	on it up (+y), the origin on its axis in the middle of the fist, 0.1 m a game unit (a
+	1.4 m staff, shortened to 1 m). The left glove is the right one's mirror image (within a
+	few millimetres): its hand space is staff space mirrored (x the other way), with the left
+	glove fitted onto the mirrored right one, a left fist around the controller as the right
+	one is around the staff.
+
 	Copyright 2026 mikermak. This file is part of Flycast and is distributed under the GNU GPL v2 or later.
 */
 #include "hands_build.h"
@@ -25,6 +36,7 @@
 #include <numeric>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace vr::hands
 {
@@ -38,6 +50,22 @@ constexpr double Metres = 0.095;		// per game unit
 constexpr double SlideTravel = 0.16;	// of the pistol's length
 constexpr double PalmOffset = 0.2;		// game units: the controller's grip is this far off the open palm
 constexpr double GrabShift[2] { -0.17, 0.02 };	// the open hand on the slide: left and up, of the pistol's length
+
+// The hero's staff
+constexpr double StaffMetres = 0.1;		// per game unit: a 1.4 m staff
+constexpr double KeepBehind = 0.05;		// metres of shaft left behind the fist, shortened
+constexpr double TailPiece = 0.175;		// metres: the lower band and the gold ferrule at the tail end
+constexpr size_t StaffRodCorners = 514;	// a whole rod's corners, as its strips come (StaffRodPolys of them)
+constexpr double NearW = 1.0;			// the game's near plane: what comes closer it cuts off there
+constexpr size_t GlovePolys = 20;		// a whole glove (the left one has 21)
+constexpr double RodPieces = 10.0;		// a rod's pieces are made of corners this close (1/10 game unit)...
+constexpr double OnALine = 1.0;			// ...and lie on one line, within a game unit
+constexpr double OnTheRod = 0.6;		// game units: the fist's middle is this close to the rod's axis (0.34)
+constexpr double MirrorFit = 0.15;		// game units: the left glove on the mirrored right one, on average (0.03)
+// Where things are in the textures (u0, v0, u1, v1): the red glove in the hero's body
+// texture, the dark animal head in the rod's.
+constexpr double GloveUv[4] { 0.68, 0.0, 1.0, 0.235 };
+constexpr double HeadUv[4] { 0.0, 0.45, 0.48, 1.0 };
 
 constexpr uint32_t TspClampV = 1u << 15, TspClampU = 1u << 16, TspFlipV = 1u << 17, TspFlipU = 1u << 18,
 		TspIgnoreTexA = 1u << 19;
@@ -173,8 +201,9 @@ PointKey pointKey(const dvec3& p, double scale) {
 	return { std::llrint(p.x * scale), std::llrint(p.y * scale), std::llrint(p.z * scale) };
 }
 
-// Polygons grouped into pieces that share vertices, in the order of their first polygon.
-std::vector<Polys> clusters(const Rip& rip, const Polys& polys)
+// Polygons grouped into pieces that share vertices (to 1/scale game units), in the order of
+// their first polygon.
+std::vector<Polys> clusters(const Rip& rip, const Polys& polys, double scale = 1000.0)
 {
 	std::vector<size_t> parent(polys.size());
 	std::iota(parent.begin(), parent.end(), 0);
@@ -190,7 +219,7 @@ std::vector<Polys> clusters(const Rip& rip, const Polys& polys)
 	for (size_t i = 0; i < polys.size(); i++)
 		for (const dvec3& e : eye(rip, *polys[i]))
 		{
-			const PointKey k = pointKey(e, 1000.0);
+			const PointKey k = pointKey(e, scale);
 			auto it = owner.find(k);
 			if (it != owner.end())
 				parent[find(i)] = find(it->second);
@@ -417,12 +446,12 @@ Tris toSpace(const Tris& tris, const dvec3& origin, const dvec3 axes[3], double 
 	return out;
 }
 
-// Splits triangles at the plane at height y: below, above.
-void clip(const Tris& tris, double y, Tris& below, Tris& above)
+// Splits triangles at the plane at height y (or along another axis: 0 x, 2 z): below, above.
+void clip(const Tris& tris, double y, Tris& below, Tris& above, int axis = 1)
 {
 	for (const Tri& t : tris)
 	{
-		const double d[3] { t.p[0].y - y, t.p[1].y - y, t.p[2].y - y };
+		const double d[3] { t.p[0][axis] - y, t.p[1][axis] - y, t.p[2][axis] - y };
 		if (d[0] >= -1e-6 && d[1] >= -1e-6 && d[2] >= -1e-6)
 		{
 			above.push_back(t);
@@ -532,6 +561,117 @@ void bounds(const Tris& tris, dvec3& lo, dvec3& hi)
 		}
 }
 
+// The middle of a polygon's texture coordinates is in a box (u0, v0, u1, v1).
+bool uvIn(const RipPoly& poly, const double (&box)[4])
+{
+	double u = 0.0, v = 0.0;
+	for (const RipVertex& rv : poly.v)
+	{
+		u += rv.u;
+		v += rv.v;
+	}
+	u /= (double)poly.v.size();
+	v /= (double)poly.v.size();
+	return u >= box[0] && u <= box[2] && v >= box[1] && v <= box[3];
+}
+
+// The corners of polygons in game eye space, as often as the strips have them...
+std::vector<dvec3> points(const Rip& rip, const Polys& polys)
+{
+	std::vector<dvec3> pts;
+	for (const RipPoly *p : polys)
+	{
+		const std::vector<dvec3> e = eye(rip, *p);
+		pts.insert(pts.end(), e.begin(), e.end());
+	}
+	return pts;
+}
+
+// ...or each once.
+std::vector<dvec3> uniquePoints(const Rip& rip, const Polys& polys)
+{
+	std::vector<dvec3> pts;
+	std::unordered_set<PointKey, PointHash> seen;
+	for (const dvec3& p : points(rip, polys))
+		if (seen.insert(pointKey(p, 1000.0)).second)
+			pts.push_back(p);
+	return pts;
+}
+
+// A line through points: their middle and the way they spread out most.
+struct Line
+{
+	dvec3 mid { 0.0 }, dir { 0.0, 0.0, 1.0 };
+	double off(const dvec3& p) const {
+		const dvec3 d = p - mid;
+		return glm::length(d - glm::dot(d, dir) * dir);
+	}
+};
+
+Line lineThrough(const std::vector<dvec3>& pts)
+{
+	Line line;
+	line.mid = mean(pts);
+	dvec3 axes[3];
+	principalAxes(pts, line.mid, axes);
+	line.dir = axes[0];
+	return line;
+}
+
+// The rods in view: pieces of corners shared (to a tenth of a game unit), the larger first,
+// joined with those on their line (a rod is a head piece and a shaft).
+std::vector<Polys> rods(const Rip& rip, const Polys& polys)
+{
+	std::vector<Polys> pieces = clusters(rip, polys, RodPieces);
+	std::stable_sort(pieces.begin(), pieces.end(), [](const Polys& a, const Polys& b) { return a.size() > b.size(); });
+	std::vector<Line> lines;
+	for (const Polys& piece : pieces)
+		lines.push_back(lineThrough(points(rip, piece)));
+	std::vector<bool> taken(pieces.size());
+	std::vector<Polys> out;
+	for (size_t i = 0; i < pieces.size(); i++)
+	{
+		if (taken[i])
+			continue;
+		Polys rod = pieces[i];
+		for (size_t j = i + 1; j < pieces.size(); j++)
+			if (!taken[j] && lines[i].off(lines[j].mid) < OnALine)
+			{
+				rod.insert(rod.end(), pieces[j].begin(), pieces[j].end());
+				taken[j] = true;
+			}
+		out.push_back(rod);
+	}
+	return out;
+}
+
+// A rigid shape's own frame: its middle and principal axes, each turned to the side the shape
+// reaches out further on (its third moment), so that a copy of it anywhere gets the same.
+struct Frame
+{
+	dvec3 mid;
+	dvec3 axes[3];
+};
+
+Frame shapeFrame(const std::vector<dvec3>& pts)
+{
+	Frame f;
+	f.mid = mean(pts);
+	principalAxes(pts, f.mid, f.axes);
+	for (dvec3& a : f.axes)
+	{
+		double m3 = 0.0;
+		for (const dvec3& p : pts)
+		{
+			const double s = glm::dot(p - f.mid, a);
+			m3 += s * s * s;
+		}
+		if (m3 < 0.0)
+			a = -a;
+	}
+	return f;
+}
+
 template<typename T>
 void put(std::vector<uint8_t>& out, const T& value)
 {
@@ -591,6 +731,304 @@ void unpack16(uint32_t c, uint32_t fmt, uint8_t *rgba)
 		rgba[3] = ((c >> 12) & 15) * 17;
 		break;
 	}
+}
+
+// The model as the bytes of hands.bin (the format is in xr_hands.cpp): the meshes are the
+// frame, the slide, the gun hand and the open hand.
+bool write(const dvec3& muzzle, const dvec3& grab, double travel, const float (&onSlide)[16], const Tris *const (&meshes)[4],
+		const TextureSource& textures, std::vector<uint8_t>& out, std::string& error)
+{
+	// textures: in the order they're first used, index 0 plain white (untextured parts)
+	std::vector<Key> keys;
+	for (const Tris *mesh : meshes)
+		for (const Tri& t : *mesh)
+			if (!t.tex.none && std::find(keys.begin(), keys.end(), t.tex) == keys.end())
+				keys.push_back(t.tex);
+	std::vector<Image> images(keys.size());
+	for (size_t i = 0; i < keys.size(); i++)
+		if (!textures(keys[i].tcw, keys[i].size, images[i]) || images[i].width == 0)
+		{
+			error = "a texture couldn't be read";
+			return false;
+		}
+
+	out.clear();
+	out.insert(out.end(), { 'H', 'N', 'D', '1' });
+	put(out, (uint32_t)1);
+	for (const dvec3& v : { muzzle, grab })
+		for (int k = 0; k < 3; k++)
+			put(out, (float)v[k]);
+	put(out, (float)travel);
+	for (float f : onSlide)
+		put(out, f);
+	put(out, (uint32_t)(keys.size() + 1));
+	put(out, (uint32_t)1);
+	put(out, (uint32_t)1);
+	put(out, (uint32_t)0);
+	out.insert(out.end(), { 255, 255, 255, 255 });
+	for (size_t i = 0; i < keys.size(); i++)
+	{
+		Image& img = images[i];
+		if (!(keys[i].flags & 16))
+			for (size_t p = 3; p < img.rgba.size(); p += 4)
+				img.rgba[p] = 255;
+		put(out, img.width);
+		put(out, img.height);
+		put(out, keys[i].flags);
+		out.insert(out.end(), img.rgba.begin(), img.rgba.end());
+	}
+	put(out, (uint32_t)std::size(meshes));
+	for (const Tris *mesh : meshes)
+	{
+		const auto normals = smoothNormals(*mesh);
+		std::map<uint32_t, std::vector<size_t>> groups;
+		for (size_t i = 0; i < mesh->size(); i++)
+		{
+			const Key& k = (*mesh)[i].tex;
+			groups[k.none ? 0 : (uint32_t)(std::find(keys.begin(), keys.end(), k) - keys.begin()) + 1].push_back(i);
+		}
+		put(out, (uint32_t)groups.size());
+		for (const auto& [tex, items] : groups)
+		{
+			put(out, tex);
+			put(out, (uint32_t)(items.size() * 3));
+			for (size_t i : items)
+			{
+				const Tri& t = (*mesh)[i];
+				for (int c = 0; c < 3; c++)
+				{
+					for (int k = 0; k < 3; k++)
+						put(out, (float)t.p[c][k]);
+					for (int k = 0; k < 3; k++)
+						put(out, (float)normals[i][c][k]);
+					put(out, (float)t.uv[c].x);
+					put(out, (float)t.uv[c].y);
+					out.insert(out.end(), std::begin(t.col), std::end(t.col));
+				}
+			}
+		}
+	}
+	return true;
+}
+
+// Polygons the game's near plane cut into: it keeps them, but cut off at W NearW, with new
+// corners there (and so more of them).
+bool cutByNearPlane(const Polys& polys)
+{
+	for (const RipPoly *p : polys)
+		for (const RipVertex& v : p->v)
+			if (1.0 / v.z < NearW + 0.001)
+				return true;
+	return false;
+}
+
+size_t cornerCount(const Polys& polys)
+{
+	size_t n = 0;
+	for (const RipPoly *p : polys)
+		n += p->v.size();
+	return n;
+}
+
+// The hero's staff from one scene's polygons: the rod's, and the hero's body's where his
+// gloves are (buildStaff).
+bool staffFrom(const Rip& rip, const Polys& rodPolys, const Polys& glovePolys, const TextureSource& textures,
+		std::vector<uint8_t>& out, std::string& error, bool shortened)
+{
+	// his rod: of the rods in view, the one with his right glove around it
+	const std::vector<Polys> rodList = rods(rip, rodPolys);
+	const std::vector<Polys> gloves = clusters(rip, glovePolys);
+	const Polys *rod = nullptr;
+	size_t glove = 0;
+	Line axis;
+	double best = 1e300;
+	for (const Polys& r : rodList)
+	{
+		const Line line = lineThrough(points(rip, r));
+		for (size_t g = 0; g < gloves.size(); g++)
+		{
+			const double off = line.off(centre(rip, gloves[g]));
+			if (off < best)
+			{
+				best = off;
+				rod = &r;
+				glove = g;
+				axis = line;
+			}
+		}
+	}
+	if (rod == nullptr || best > OnTheRod)
+	{
+		error = "no glove around a staff";
+		return false;
+	}
+	if (rod->size() != StaffRodPolys)
+	{
+		error = "only part of it in view (" + std::to_string(rod->size()) + " of its " + std::to_string(StaffRodPolys) + " polygons)";
+		return false;
+	}
+	const Polys& fist = gloves[glove];
+	if (fist.size() != GlovePolys)
+	{
+		error = "only part of the fist around it in view";
+		return false;
+	}
+	// his left glove: the other one, nearest the right
+	const dvec3 fistCentre = centre(rip, fist);
+	const Polys *other = nullptr;
+	double otherAt = 1e300;
+	for (size_t g = 0; g < gloves.size(); g++)
+		if (g != glove && glm::length(centre(rip, gloves[g]) - fistCentre) < otherAt)
+		{
+			otherAt = glm::length(centre(rip, gloves[g]) - fistCentre);
+			other = &gloves[g];
+		}
+	if (other == nullptr || other->size() < GlovePolys)
+	{
+		error = "the left glove isn't (all) in view";
+		return false;
+	}
+	// The near plane keeps the polygons it cuts into, so all of them there doesn't mean all
+	// of it: none may reach the plane, and the rod has all its corners.
+	if (cutByNearPlane(*rod) || cutByNearPlane(fist) || cutByNearPlane(*other))
+	{
+		error = "too close to the camera, cut off by its near plane";
+		return false;
+	}
+	if (cornerCount(*rod) != StaffRodCorners)
+	{
+		error = "not all of it there (" + std::to_string(cornerCount(*rod)) + " of its " + std::to_string(StaffRodCorners) + " corners)";
+		return false;
+	}
+
+	// staff space: the head forward (-z), the ears of the animal head on it up (+y), the
+	// origin on the axis in the middle of the fist
+	Polys head;
+	for (const RipPoly *p : *rod)
+		if (uvIn(*p, HeadUv))
+			head.push_back(p);
+	if (head.empty())
+	{
+		error = "no head on it";
+		return false;
+	}
+	const std::vector<dvec3> headPts = points(rip, head);
+	dvec3 z = axis.dir;
+	if (glm::dot(mean(headPts) - axis.mid, z) > 0.0)
+		z = -z;
+	const dvec3 grip = axis.mid + glm::dot(fistCentre - axis.mid, z) * z;
+	// up: towards the ears, the fifth of the head's corners furthest off the axis
+	std::vector<dvec3> offs;
+	for (const dvec3& p : headPts)
+		offs.push_back(p - grip - glm::dot(p - grip, z) * z);
+	std::stable_sort(offs.begin(), offs.end(), [](const dvec3& a, const dvec3& b) { return glm::length(a) > glm::length(b); });
+	offs.resize(std::min(offs.size(), std::max<size_t>(3, offs.size() / 5)));
+	const dvec3 y = glm::normalize(mean(offs));
+	const dvec3 axes[3] { glm::cross(y, z), y, z };
+	Tris rodM = toSpace(triangles(rip, *rod), grip, axes, StaffMetres);
+	const Tris fistM = toSpace(triangles(rip, fist), grip, axes, StaffMetres);
+
+	if (shortened)
+	{
+		// The shaft from a hand's width behind the fist to the tail piece goes, and the tail
+		// piece (from the ring of corners nearest TailPiece off the end) moves up to there.
+		dvec3 lo, hi;
+		bounds(rodM, lo, hi);
+		const double want = hi.z - TailPiece;
+		double start = want, nearest = 0.03;
+		for (const dvec3& p : corners(rodM))
+			if (std::abs(p.z - want) < nearest)
+			{
+				nearest = std::abs(p.z - want);
+				start = p.z;
+			}
+		if (start > KeepBehind)
+		{
+			Tris kept, between, gone;
+			for (const Tri& t : rodM)
+			{
+				const double back = std::max({ t.p[0].z, t.p[1].z, t.p[2].z });
+				const double middle = (t.p[0].z + t.p[1].z + t.p[2].z) / 3.0;
+				if (back <= KeepBehind)
+					kept.push_back(t);
+				else if (middle >= start)
+				{
+					Tri moved = t;
+					for (dvec3& p : moved.p)
+						p.z -= start - KeepBehind;
+					kept.push_back(moved);
+				}
+				else
+					between.push_back(t);
+			}
+			// (the shaft through the fist is cut off square)
+			clip(between, KeepBehind, kept, gone, 2);
+			rodM = std::move(kept);
+		}
+	}
+	// the muzzle: the tip of the head, the middle of its front-most corners
+	dvec3 lo, hi;
+	bounds(rodM, lo, hi);
+	dvec3 flo(1e300), fhi(-1e300);
+	for (const dvec3& p : corners(rodM))
+		if (p.z < lo.z + 0.002)
+		{
+			flo = glm::min(flo, p);
+			fhi = glm::max(fhi, p);
+		}
+	const dvec3 muzzle((flo.x + fhi.x) / 2, (flo.y + fhi.y) / 2, lo.z);
+
+	// hand space: staff space mirrored, with the left glove fitted onto the mirrored right
+	// one (a turn of its frame onto theirs; of the four that differ in which way the axes
+	// point, as a third moment can be near nothing, the one that fits best)
+	std::vector<dvec3> right;
+	for (const dvec3& p : uniquePoints(rip, fist))
+	{
+		const dvec3 d = p - grip;
+		right.emplace_back(-glm::dot(axes[0], d), glm::dot(axes[1], d), glm::dot(axes[2], d));
+	}
+	const std::vector<dvec3> left = uniquePoints(rip, *other);
+	const Frame fr = shapeFrame(right), fl = shapeFrame(left);
+	const double handedness = glm::determinant(glm::dmat3(fl.axes[0], fl.axes[1], fl.axes[2]))
+			* glm::determinant(glm::dmat3(fr.axes[0], fr.axes[1], fr.axes[2]));
+	double fit = 1e300;
+	dvec3 handAxes[3];
+	for (const dvec3& s : { dvec3(1, 1, 1), dvec3(1, -1, -1), dvec3(-1, 1, -1), dvec3(-1, -1, 1) })
+	{
+		const dvec3 sign = handedness > 0.0 ? s : -s;	// a turn, never a mirror
+		dvec3 rows[3];		// eye space -> hand space
+		for (int i = 0; i < 3; i++)
+			rows[i] = sign.x * fr.axes[0][i] * fl.axes[0] + sign.y * fr.axes[1][i] * fl.axes[1] + sign.z * fr.axes[2][i] * fl.axes[2];
+		double sum = 0.0;
+		for (const dvec3& p : left)
+		{
+			const dvec3 d = p - fl.mid;
+			const dvec3 q = dvec3(glm::dot(rows[0], d), glm::dot(rows[1], d), glm::dot(rows[2], d)) + fr.mid;
+			double nearest = 1e300;
+			for (const dvec3& r : right)
+				nearest = std::min(nearest, glm::length(q - r));
+			sum += nearest;
+		}
+		if (sum / left.size() < fit)
+		{
+			fit = sum / left.size();
+			std::copy(std::begin(rows), std::end(rows), std::begin(handAxes));
+		}
+	}
+	if (fit > MirrorFit)
+	{
+		error = "the left glove doesn't fit the right one";
+		return false;
+	}
+	const dvec3 handOrigin = fl.mid - (handAxes[0] * fr.mid.x + handAxes[1] * fr.mid.y + handAxes[2] * fr.mid.z);
+	const Tris openM = toSpace(triangles(rip, *other), handOrigin, handAxes, StaffMetres);
+
+	// no slide, nothing for the other hand to take hold of
+	float onSlide[16] {};
+	onSlide[0] = onSlide[5] = onSlide[10] = onSlide[15] = 1.f;
+	const Tris slideM;
+	const Tris *meshes[] { &rodM, &slideM, &fistM, &openM };
+	return write(muzzle, dvec3(0.0), 0.0, onSlide, meshes, textures, out, error);
 }
 
 }	// namespace
@@ -794,78 +1232,40 @@ bool build(const Rip& rip, const Parts& parts, const TextureSource& textures, st
 	onSlide[14] = (float)grab.z;
 	onSlide[15] = 1.f;
 
-	// textures: in the order they're first used, index 0 plain white (untextured parts)
 	const Tris *meshes[] { &frameM, &slideM, &handM, &openM };
-	std::vector<Key> keys;
-	for (const Tris *mesh : meshes)
-		for (const Tri& t : *mesh)
-			if (!t.tex.none && std::find(keys.begin(), keys.end(), t.tex) == keys.end())
-				keys.push_back(t.tex);
-	std::vector<Image> images(keys.size());
-	for (size_t i = 0; i < keys.size(); i++)
-		if (!textures(keys[i].tcw, keys[i].size, images[i]) || images[i].width == 0)
-		{
-			error = "a texture couldn't be read";
-			return false;
-		}
+	return write(muzzle, grab, travel, onSlide, meshes, textures, out, error);
+}
 
-	out.clear();
-	out.insert(out.end(), { 'H', 'N', 'D', '1' });
-	put(out, (uint32_t)1);
-	for (const dvec3& v : { muzzle, grab })
-		for (int k = 0; k < 3; k++)
-			put(out, (float)v[k]);
-	put(out, (float)travel);
-	for (float f : onSlide)
-		put(out, f);
-	put(out, (uint32_t)(keys.size() + 1));
-	put(out, (uint32_t)1);
-	put(out, (uint32_t)1);
-	put(out, (uint32_t)0);
-	out.insert(out.end(), { 255, 255, 255, 255 });
-	for (size_t i = 0; i < keys.size(); i++)
+bool buildStaff(const Rip& rip, const StaffParts& parts, const TextureSource& textures, std::vector<uint8_t>& out,
+		std::string& error, bool shortened)
+{
+	auto good = [](const RipPoly& p) {
+		if (p.v.size() < 3)
+			return false;
+		for (const RipVertex& v : p.v)
+			if (!std::isfinite(v.z) || v.z <= 0.f)
+				return false;
+		return true;
+	};
+	error = "no staff here";
+	for (const StaffParts::Scene& scene : parts.scenes)
 	{
-		Image& img = images[i];
-		if (!(keys[i].flags & 16))
-			for (size_t p = 3; p < img.rgba.size(); p += 4)
-				img.rgba[p] = 255;
-		put(out, img.width);
-		put(out, img.height);
-		put(out, keys[i].flags);
-		out.insert(out.end(), img.rgba.begin(), img.rgba.end());
-	}
-	put(out, (uint32_t)std::size(meshes));
-	for (const Tris *mesh : meshes)
-	{
-		const auto normals = smoothNormals(*mesh);
-		std::map<uint32_t, std::vector<size_t>> groups;
-		for (size_t i = 0; i < mesh->size(); i++)
+		if (scene.rod == 0)
+			continue;
+		Polys rodPolys, glovePolys;
+		for (const RipPoly& p : rip.polys)
 		{
-			const Key& k = (*mesh)[i].tex;
-			groups[k.none ? 0 : (uint32_t)(std::find(keys.begin(), keys.end(), k) - keys.begin()) + 1].push_back(i);
+			if (!good(p))
+				continue;
+			if (p.texture() == scene.rod)
+				rodPolys.push_back(&p);
+			else if (p.texture() == scene.body && uvIn(p, GloveUv))
+				glovePolys.push_back(&p);
 		}
-		put(out, (uint32_t)groups.size());
-		for (const auto& [tex, items] : groups)
-		{
-			put(out, tex);
-			put(out, (uint32_t)(items.size() * 3));
-			for (size_t i : items)
-			{
-				const Tri& t = (*mesh)[i];
-				for (int c = 0; c < 3; c++)
-				{
-					for (int k = 0; k < 3; k++)
-						put(out, (float)t.p[c][k]);
-					for (int k = 0; k < 3; k++)
-						put(out, (float)normals[i][c][k]);
-					put(out, (float)t.uv[c].x);
-					put(out, (float)t.uv[c].y);
-					out.insert(out.end(), std::begin(t.col), std::end(t.col));
-				}
-			}
-		}
+		if (!rodPolys.empty() && staffFrom(rip, rodPolys, glovePolys, textures, out, error, shortened))
+			return true;
 	}
-	return true;
+	return false;
 }
 
 }

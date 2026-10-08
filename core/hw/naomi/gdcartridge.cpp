@@ -1,3 +1,4 @@
+// hotd2-vr: modified in 2026 by mikermak for the Quest VR mode (see "git log master..hotd2-vr").
 /*
  * gdcartridge.cpp
  *
@@ -513,7 +514,18 @@ void GDCartridge::device_start(LoadProgress *progress, std::vector<u8> *digest)
 		catch (const FlycastException& e)
 		{
 			WARN_LOG(NAOMI, "Opening chd failed: %s", e.what());
-			if (gdrom_parent_name != nullptr)
+			// hotd2-vr: also the disc as a .cue (a Redump dump: cue and bins) or .gdi, by the
+			// same name
+			for (const char *ext : { ".cue", ".gdi" })
+			{
+				if (gdrom != nullptr)
+					break;
+				try {
+					gdrom = std::unique_ptr<Disc>(OpenDisc(gdrom_path + ext, digest));
+				} catch (const FlycastException&) {
+				}
+			}
+			if (gdrom == nullptr && gdrom_parent_name != nullptr)
 			{
 				try {
 					std::string gdrom_parent_path = hostfs::storage().getSubPath(parent, std::string(gdrom_parent_name) + "/" + gdrom_name);

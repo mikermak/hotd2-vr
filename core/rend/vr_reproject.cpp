@@ -44,7 +44,7 @@ constexpr u32 ScaleY = 5 * 4;
 
 static float readFloat(u32 ramOffset)
 {
-	u32 raw = ReadMem32_nommu(0x8C000000u + (ramOffset & 0x00FFFFFFu));
+	u32 raw = ReadMem32_nommu(0x8C000000u + (ramOffset & 0x01FFFFFFu));
 	float f;
 	memcpy(&f, &raw, sizeof(f));
 	return f;
@@ -54,7 +54,7 @@ static void writeFloat(u32 ramOffset, float f)
 {
 	u32 raw;
 	memcpy(&raw, &f, sizeof(raw));
-	WriteMem32_nommu(0x8C000000u + (ramOffset & 0x00FFFFFFu), raw);
+	WriteMem32_nommu(0x8C000000u + (ramOffset & 0x01FFFFFFu), raw);
 }
 
 static bool plausible(float v, float lo, float hi) {
@@ -103,8 +103,10 @@ static u16 widenedAngle(u16 stock, float scale)
 	return (u16)std::lround(wide * (65536.f / 6.2831853f));
 }
 
+static bool widensByCode();
+
 bool widensGameFov() {
-	return fovLiterals[0] != 0;
+	return fovLiterals[0] != 0 || widensByCode();
 }
 
 static void widenGameView(Event event, void *)
@@ -134,7 +136,7 @@ static void widenGameView(Event event, void *)
 		}
 		return;
 	}
-	if (config::VrViewportAddr <= 0)
+	if (config::VrViewportAddr <= 0 || widensByCode())
 		return;
 	const u32 addr = config::VrViewportAddr;
 	const glm::vec2 cur(readFloat(addr + ScaleX), readFloat(addr + ScaleY));
@@ -175,45 +177,182 @@ static void logSceneStats(const rend_context& ctx, glm::vec2 focal)
 }
 
 //
-// Per-game camera addresses, applied when the game starts so the Quest build needs no
-// manual config. Values already set in the config file win.
+// Per-game profiles, applied when the game starts so the Quest build needs no manual
+// config. Values already set in the config file win.
 //
+struct CodePatch
+{
+	u32 offset;			// RAM offset of a 16-bit word of code
+	u16 stock, patched;
+};
+struct Poke
+{
+	u32 offset;			// RAM offset of a 16-bit word, written every frame
+	u16 value;
+};
+struct ScreenBox
+{
+	float x0, y0, x1, y1;	// DC pixels
+};
 struct GameProfile
 {
-	const char *gameId;
-	int projAddr, viewportAddr;
-	float fovScale;
-	// Where the game's code holds its field of view (16-bit angle literals), and its value.
-	u32 fovLiterals[4];
-	u16 fovStock;
-	// The textures of the game's own hit marker (VRAM addresses): see dropShotMarker.
-	u32 markerTextures[4];
-	// Player 2's "PRESS START BUTTON" and "CREDIT(S)" pictures: see hidePlayer2Prompt.
-	u32 p2PromptTextures[4];
-	// The agent's parts in the game over scene (hands_rip.h).
-	hands::Parts hands;
+	const char *gameId = "";
+	// The projection and viewport matrices in RAM: the game's live focal length.
+	int projAddr = 0, viewportAddr = 0;
+	float fovScale = 1.f;
+	// Widening the game's own view: either the 16-bit angle literals its code builds its
+	// projection from (scaled by fovScale, see widenGameView)...
+	u32 fovLiterals[4] {};
+	u16 fovStock = 0;
+	// ...or code changed (every word stock, else none of them).
+	CodePatch fovPatch[4] {};
+	// The focal length the game's light-gun hit test uses (its stock view): a float in RAM
+	// (it may change from scene to scene), else vr.Focal. And the stock framing of the 2D
+	// plane (0: vr.Focal).
+	u32 stockFocalAddr = 0;
+	float focal = 0.f;
+	// Written every frame once the game's code is there (its fovPatch words stock or patched).
+	Poke pokes[12] {};
+	// The textures of the game's own hit marker (VRAM addresses) and the W it is drawn at:
+	// see dropShotMarker.
+	u32 markerTextures[4] {};
+	float markerMinW = 0.85f, markerMaxW = 1.15f;
+	// Player 2's prompt pictures and where they are: see hidePlayer2Prompt.
+	u32 p2PromptTextures[4] {};
+	ScreenBox p2PromptBox { 352.f, 384.f, 640.f, 480.f };
+	// 2D layers near the 2D plane (see snapNear2D): up to this W, at W in multiples of
+	// this step; the W of the letterbox bars (0: the 2D plane's).
+	float snapMaxW = 1.05f, snapStep = 0.01f;
+	float letterboxW = 0.f;
+	// The W of its 2D plane (0: vr.HudW, HOTD2's 1.0). Never a W its 3D can have: the
+	// headset's vertex shader pins every vertex near it onto the 2D plane.
+	float hudW = 0.f;
+	// Screens without any 3D (menus drawn in layers of depth): all on the 2D plane.
+	bool flatScreens = false;
+	// The size of its game units next to HOTD2's: vr.WorldScale (metres per HOTD2 unit, the
+	// player's own setting) times this.
+	float unitScale = 1.f;
+	// The player's own model from the game, in a file of its own (hands_rip.h): the agent's
+	// hands and pistol, the hero's staff, or none (the arcade gun).
+	hands::Source model {};
 };
-static const GameProfile profiles[] = {
+
+static std::vector<GameProfile> makeProfiles()
+{
+	std::vector<GameProfile> list;
+	GameProfile p;
 	// The House of the Dead 2 (PAL). Its four perspective setups (0x8C029B48, 0x8C02B2C6,
 	// 0x8C02B30A, 0x8C02B34E) load 41.1 degrees from two literals and call 0x8C0383C0.
 	// Its hit marker: a glow (0x59bb80, ~62 px) on the shot and rays (0x587380) flying out
 	// ~100 px, drawn at W 0.9..1.01 (measured on the PC, chapter 1 and the attract demo).
 	// Player 2's prompt in the bottom right corner: 0x57b700 and 0x56bb00 (chapter 1).
-	{ "MK-5100250", 0x4C65E0, 0x4C6708, 2.f, { 0x029C12, 0x02B370 }, 7484, { 0x59bb80, 0x587380 }, { 0x57b700, 0x56bb00 },
-			{ { 0x5fa380, 0x5fc380 }, 0x601380, 0x5fe380 } },
+	p.gameId = "MK-5100250";
+	p.projAddr = 0x4C65E0;
+	p.viewportAddr = 0x4C6708;
+	p.fovScale = 2.f;
+	p.fovLiterals[0] = 0x029C12;
+	p.fovLiterals[1] = 0x02B370;
+	p.fovStock = 7484;
+	p.markerTextures[0] = 0x59bb80;
+	p.markerTextures[1] = 0x587380;
+	p.p2PromptTextures[0] = 0x57b700;
+	p.p2PromptTextures[1] = 0x56bb00;
+	// The agent's parts in the game over scene: his hands, the cuff, the pistol.
+	p.model.kind = hands::Source::AgentsPistol;
+	p.model.file = "hands.bin";
+	p.model.pistol = { { 0x5fa380, 0x5fc380 }, 0x601380, 0x5fe380 };
+	list.push_back(p);
 	// The House of the Dead 2 (USA): the same code and data as PAL, elsewhere (found by
 	// comparing RAM and VRAM dumps of both at the same moments: code 0x280 lower, the matrices
 	// 0x680 lower, the setups at 0x8C0298C4, 0x8C02B042, 0x8C02B086 and 0x8C02B0CA calling
 	// perspective() at 0x8C038140; every texture an exact byte match of PAL's).
-	{ "MK-51002", 0x4C5F60, 0x4C6088, 2.f, { 0x02998E, 0x02B0EC }, 7484, { 0x59e000, 0x589000 }, { 0x53c400, 0x572000 },
-			{ { 0x5fc800, 0x5fe800 }, 0x603800, 0x600800 } },
-};
+	p.gameId = "MK-51002";
+	p.projAddr = 0x4C5F60;
+	p.viewportAddr = 0x4C6088;
+	p.fovLiterals[0] = 0x02998E;
+	p.fovLiterals[1] = 0x02B0EC;
+	p.markerTextures[0] = 0x59e000;
+	p.markerTextures[1] = 0x589000;
+	p.p2PromptTextures[0] = 0x53c400;
+	p.p2PromptTextures[1] = 0x572000;
+	p.model.pistol = { { 0x5fc800, 0x5fe800 }, 0x603800, 0x600800 };	// (the same hands.bin as PAL's)
+	list.push_back(p);
+	// The Maze of the Kings (NAOMI, Hitmaker 2002; worked out from rips, RAM dumps and its
+	// code, see hotd2-vr/README). Its field of view changes from scene to scene (60 degrees
+	// in the maze, 40 in the story, 50 in menus, 80 in the attract) and comes from camera
+	// data, not code: one angle A, set through setPerspective 0x8C074630 / setFovAngle
+	// 0x8C0746B0, which keep the stock focal 240/tan(A/2) at 0x0C0E7248 (what the light-gun
+	// hit test unprojects with) and call the projection builder 0x8C08D8D0. Its prologue
+	// is changed to take 0.75A as the half angle instead of A/2 (mov r4,r13; shlr2 r4;
+	// sub r4,r13 in place of a dead stack store, its reload and shar r13): the projection,
+	// culling planes and screen matrices all 1.5 times as wide (the maze 90 degrees). The
+	// matrices: projection 0x0C0E7A60 (f/320, f/240), viewport 0x0C0F24D0 (320, -240).
+	// It culls models by their bounding spheres against its own frame (0x8C084BB0 and the
+	// node loops at 0x8C0912A0, 0x8C0923C2, 0x8C09916E), with a margin both builders make
+	// from a 0.5 at 0x8C08DC4C (0x0C0F2550/54, read only there): made 4.0, a sphere counts
+	// eight times its size, so the people and things beside the camera in the story scenes,
+	// in view when you turn your head, are drawn too (the game's own frame stays the same;
+	// about a third more polygons in the story).
+	p = GameProfile();
+	p.gameId = "THE MAZE OF THE KINGS";
+	p.projAddr = 0x0E7A60;
+	p.viewportAddr = 0x0F24D0;
+	p.fovScale = 2.f;	// (only says "widen": the patch's own factor is fixed)
+	p.fovPatch[0] = { 0x08D8EE, 0x1F41, 0x6D43 };
+	p.fovPatch[1] = { 0x08D8F2, 0x5DF1, 0x4409 };
+	p.fovPatch[2] = { 0x08D8F6, 0x4D21, 0x3D48 };
+	p.fovPatch[3] = { 0x08DC4E, 0x3F00, 0x4080 };
+	p.stockFocalAddr = 0x0E7248;
+	p.focal = 415.72f;	// the maze's
+	// The gun calibration (ROD CONTROLLER SETTINGS; factory 64, 128, 500, 0, 128, 500 for
+	// each player at 0x0C0E2058 and 0x0C0E2064) stretches the gun's position outward from
+	// the centre, up to 30 px off. Kept at 0, 0, 512, 0, 0, 512, the game's aim is where the
+	// gun points (within a pixel).
+	const u16 calibration[6] { 0, 0, 512, 0, 0, 512 };
+	for (int player = 0; player < 2; player++)
+		for (int k = 0; k < 6; k++)
+			p.pokes[player * 6 + k] = { (u32)(0x0E2058 + player * 12 + k * 2), calibration[k] };
+	// Its shot flash: a starburst (0x50b800) and red stars (0x4f6800) at W 1.5.
+	p.markerTextures[0] = 0x50b800;
+	p.markerTextures[1] = 0x4f6800;
+	p.markerMinW = 1.45f;
+	p.markerMaxW = 1.55f;
+	// "PRESS 2P START" at the bottom centre (the same sheets as FREE PLAY under it and
+	// player 1's prompt, which are wider and lower).
+	p.p2PromptTextures[0] = 0x68d800;
+	p.p2PromptTextures[1] = 0x48c000;
+	p.p2PromptBox = { 250.f, 440.f, 390.f, 462.f };
+	// The HUD at W 1.082, subtitles 1.040, area names 1.052-1.054, CONTINUE 1.08-1.085, the
+	// damage flash 1.4 and its shot effects 1.5, in steps of 0.001; letterbox bars at 1.090.
+	p.snapMaxW = 1.6f;
+	p.snapStep = 0.001f;
+	p.letterboxW = 1.090f;
+	// Its near plane is at W 1.0 exactly (the floor under the camera, the walls beside it,
+	// the desert's ground and sky domes are clipped there, 20-340 corners a frame): with the
+	// 2D plane at 1.0 those corners were pinned onto it, streaks over the floor. Its HUD's W
+	// instead; FREE PLAY at 1.000 is snapped like the other layers.
+	p.hudW = 1.082f;
+	p.flatScreens = true;
+	// The camera rides about 14.5 units over the floor in the maze: eye height at 0.11 m a
+	// unit, 4.4 times HOTD2's 0.025.
+	p.unitScale = 4.4f;
+	// The hero's staff, in his right fist, as the attract demo shows it from 32 s on (and
+	// the story's intro): the rod's texture and the hero's body's (his gloves are on it), in
+	// VRAM where each of the two scenes puts them. (The heroine's body is another texture.)
+	p.model.kind = hands::Source::HerosStaff;
+	p.model.file = "staff-mok.bin";
+	p.model.staff = { { { 0xC1C000, 0xCB0800 }, { 0xD87000, 0xDA9800 } } };
+	list.push_back(p);
+	return list;
+}
+static const std::vector<GameProfile> profiles = makeProfiles();
+static const GameProfile *activeProfile;	// the game being played (or none)
 
-const hands::Parts *gameHandsParts()
+const hands::Source *gameModelSource()
 {
 	for (const GameProfile& prof : profiles)
-		if (settings.content.gameId == prof.gameId && prof.hands.gun != 0)
-			return &prof.hands;
+		if (settings.content.gameId == prof.gameId && prof.model.kind != hands::Source::None)
+			return &prof.model;
 	return nullptr;
 }
 
@@ -225,6 +364,7 @@ static void applyGameProfile(Event, void *)
 	std::fill(std::begin(fovLiterals), std::end(fovLiterals), 0u);
 	std::fill(std::begin(markerTextures), std::end(markerTextures), 0u);
 	std::fill(std::begin(p2PromptTextures), std::end(p2PromptTextures), 0u);
+	activeProfile = nullptr;
 	if (xr::enabled())
 	{
 		// Everything the headset view depends on.
@@ -235,10 +375,15 @@ static void applyGameProfile(Event, void *)
 	{
 		if (settings.content.gameId != prof.gameId)
 			continue;
+		activeProfile = &prof;
 		if (config::VrProjAddr == 0)
 			config::VrProjAddr.override(prof.projAddr);
 		if (config::VrViewportAddr == 0)
 			config::VrViewportAddr.override(prof.viewportAddr);
+		if (prof.focal > 0.f)
+			config::VrFocal.override(prof.focal);
+		if (prof.hudW > 0.f && config::VrHudW == 1.f)	// (unless the player set one)
+			config::VrHudW.override(prof.hudW);
 		if (xr::enabled() && config::VrWiden && config::VrFovScale <= 1.f)
 			config::VrFovScale.override(prof.fovScale);
 		if (config::VrWidenFov)
@@ -249,13 +394,13 @@ static void applyGameProfile(Event, void *)
 		std::copy(std::begin(prof.markerTextures), std::end(prof.markerTextures), std::begin(markerTextures));
 		std::copy(std::begin(prof.p2PromptTextures), std::end(prof.p2PromptTextures), std::begin(p2PromptTextures));
 		const bool gunB = config::VrDualWield;
-		if (xr::enabled() && config::VrXrGun
+		if (xr::enabled() && config::VrXrGun && settings.platform.isConsole()
 				&& (config::MapleMainDevices[0] != MDT_LightGun || (gunB && config::MapleMainDevices[1] != MDT_LightGun)))
 		{
 			// The right controller is a light gun: plug one into port A (a pad ignores
 			// where it points), and player 2's into port B for dual wielding (vr.DualWield).
 			// The devices were made just before this event, before the game runs, so they
-			// can still be swapped.
+			// can still be swapped. (An arcade game's guns are on its I/O board already.)
 			config::MapleMainDevices[0].override(MDT_LightGun);
 			if (gunB)
 				config::MapleMainDevices[1].override(MDT_LightGun);
@@ -274,6 +419,77 @@ static struct GameProfileRegistration
 	}
 } gameProfileRegistration;
 
+static bool widensByCode() {
+	return activeProfile != nullptr && activeProfile->fovPatch[0].offset != 0 && config::VrWidenFov;
+}
+
+// The code a profile's patch and pokes are for is in RAM: every patched word stock or patched.
+static bool profileCodeThere(const GameProfile& prof)
+{
+	if (prof.fovPatch[0].offset == 0)
+		return true;
+	for (const CodePatch& c : prof.fovPatch)
+	{
+		if (c.offset == 0)
+			break;
+		const u16 now = ReadMem16_nommu(0x8C000000u + c.offset);
+		if (now != c.stock && now != c.patched)
+			return false;
+	}
+	return true;
+}
+
+// Each frame: the profile's code patch (all of it, once the stock code is there) and pokes.
+static void applyProfileWrites(Event, void *)
+{
+	const GameProfile *prof = activeProfile;
+	if (prof == nullptr || !config::VrReproject || !profileCodeThere(*prof))
+		return;
+	if (prof->fovPatch[0].offset != 0 && config::VrWidenFov && config::VrFovScale > 1.f)
+	{
+		bool stock = true;
+		for (const CodePatch& c : prof->fovPatch)
+			stock = stock && (c.offset == 0 || ReadMem16_nommu(0x8C000000u + c.offset) == c.stock);
+		if (stock)
+		{
+			// (the dynarec drops what it compiled from these pages when they're written)
+			for (const CodePatch& c : prof->fovPatch)
+				if (c.offset != 0)
+					WriteMem16_nommu(0x8C000000u + c.offset, c.patched);
+			NOTICE_LOG(RENDERER, "VR: the game's field of view widened (code at %08x)", 0x8C000000u + prof->fovPatch[0].offset);
+		}
+	}
+	for (const Poke& poke : prof->pokes)
+		if (poke.offset != 0 && ReadMem16_nommu(0x8C000000u + poke.offset) != poke.value)
+			WriteMem16_nommu(0x8C000000u + poke.offset, poke.value);
+}
+
+static struct ProfileWritesRegistration
+{
+	ProfileWritesRegistration() {
+		EventManager::listen(Event::VBlank, applyProfileWrites);
+	}
+} profileWritesRegistration;
+
+float worldScale()
+{
+	const GameProfile *prof = activeProfile;
+	return config::VrWorldScale * (prof != nullptr ? prof->unitScale : 1.f);
+}
+
+// The stock focal length the game's light-gun hit test uses, in DC pixels.
+static float stockFocal()
+{
+	const GameProfile *prof = activeProfile;
+	if (prof != nullptr && prof->stockFocalAddr != 0)
+	{
+		const float f = readFloat(prof->stockFocalAddr);
+		if (plausible(f, 10.f, 20000.f))
+			return f;
+	}
+	return config::VrFocal;
+}
+
 GameCamera gameCamera(const rend_context& ctx)
 {
 	int dcWidth, dcHeight;
@@ -281,6 +497,7 @@ GameCamera gameCamera(const rend_context& ctx)
 	GameCamera cam;
 	cam.dcSize = glm::vec2(dcWidth, dcHeight);
 	cam.tanHalf = cam.dcSize * 0.5f / readGameFocal();
+	cam.stockTan = cam.dcSize * 0.5f / stockFocal();
 	cam.overlayW = config::VrHudW;
 	return cam;
 }
@@ -303,7 +520,7 @@ glm::vec3 comfortParams()
 		return glm::vec3(0.f);
 	// at most half the start distance: the curve stays monotonic
 	const float closest = std::clamp((float)config::VrComfortMin, 0.f, start * 0.5f);
-	return glm::vec3((float)config::VrWorldScale, start, closest);
+	return glm::vec3(worldScale(), start, closest);
 }
 
 //
@@ -372,11 +589,14 @@ static void hideVertices(rend_context& ctx, const PolyParam& pp)
 // They are pulled onto the plane, their order kept. Only what looks like such a layer:
 // one W, a round one (a multiple of 0.01: sprites and debris flying past the camera pass
 // through every W, see the headset logs), near the plane, and on the screen.
-constexpr float SnapMinW = 0.75f, SnapMaxW = 1.05f;
+constexpr float SnapMinW = 0.75f;
 
 static void snapNear2D(rend_context& ctx, const std::vector<PolyParam>& list, u32 from, u32 to, float hudW,
 		int fbWidth, int fbHeight)
 {
+	const GameProfile *prof = activeProfile;
+	const float SnapMaxW = prof != nullptr ? prof->snapMaxW : 1.05f;
+	const float step = prof != nullptr ? prof->snapStep : 0.01f;
 	for (u32 n = from; n < to && n < list.size(); n++)
 	{
 		const PolyParam& pp = list[n];
@@ -386,7 +606,7 @@ static void snapNear2D(rend_context& ctx, const std::vector<PolyParam>& list, u3
 		if (!(z > 0.f) || !std::isfinite(z))
 			continue;
 		const float w = 1.f / z;
-		if (w < SnapMinW || w > SnapMaxW || w == hudW || std::abs(w * 100.f - std::round(w * 100.f)) > 0.02f)
+		if (w < SnapMinW || w > SnapMaxW || w == hudW || std::abs(w / step - std::round(w / step)) > 0.02f)
 			continue;
 		u32 i = pp.first;
 		for (; i < pp.first + pp.count; i++)
@@ -403,7 +623,7 @@ static void snapNear2D(rend_context& ctx, const std::vector<PolyParam>& list, u3
 		for (u32 j = pp.first; j < pp.first + pp.count; j++)
 			ctx.verts[j].z = 1.f / snapped;
 		// what gets snapped, once per W (in 0.01 steps), to check nothing 3D is caught
-		static u32 seen[(int)(SnapMaxW * 100) + 2];
+		static u32 seen[202];
 		const int bucket = (int)std::lround(w * 100.f);
 		if (bucket >= 0 && bucket < (int)std::size(seen) && seen[bucket]++ == 0)
 			NOTICE_LOG(RENDERER, "VR: 2D layer at W %.3f (%u verts at %.0f,%.0f) put on the 2D plane",
@@ -411,11 +631,63 @@ static void snapNear2D(rend_context& ctx, const std::vector<PolyParam>& list, u3
 	}
 }
 
+// A screen without any 3D (a menu the game draws in layers of depth: W 2..10 in The Maze of
+// the Kings) when the profile says so (flatScreens): all of it on the 2D plane, its layers
+// kept in their order. True when it was one.
+static bool snapFlatScreen(rend_context& ctx, const RenderPass& pass, const RenderPass& prev, float hudW)
+{
+	if (activeProfile == nullptr || !activeProfile->flatScreens)
+		return false;
+	bool flat = true;
+	float wMax = 0.f;
+	u32 polys = 0;
+	auto each = [&](auto&& fn) {
+		auto list = [&](const std::vector<PolyParam>& polys, u32 from, u32 to) {
+			for (u32 n = from; n < to && n < polys.size(); n++)
+			{
+				const PolyParam& pp = polys[n];
+				if (pp.count >= 3 && pp.first + pp.count <= ctx.verts.size())
+					fn(pp);
+			}
+		};
+		list(ctx.global_param_op, std::max(prev.op_count, 1u), pass.op_count);
+		list(ctx.global_param_pt, prev.pt_count, pass.pt_count);
+		list(ctx.global_param_tr, prev.tr_count, pass.tr_count);
+	};
+	each([&](const PolyParam& pp) {
+		const float z = ctx.verts[pp.first].z;
+		if (!(z > 0.f) || !std::isfinite(z))
+			return;
+		for (u32 i = pp.first; i < pp.first + pp.count; i++)
+			if (std::abs(ctx.verts[i].z - z) > z * 1e-5f)
+				flat = false;
+		wMax = std::max(wMax, 1.f / z);
+		polys++;
+	});
+	if (!flat || polys == 0 || wMax <= hudW + 0.01f)
+		return false;
+	each([&](const PolyParam& pp) {
+		const float z = ctx.verts[pp.first].z;
+		if (!(z > 0.f) || !std::isfinite(z))
+			return;
+		const float t = std::clamp((1.f / z - hudW) / (wMax - hudW), -1.f, 1.f);
+		const float snapped = 1.f / (hudW + 0.0015f * t);
+		for (u32 i = pp.first; i < pp.first + pp.count; i++)
+			ctx.verts[i].z = snapped;
+	});
+	static u32 logged;
+	if (logged++ % 600 == 0)
+		NOTICE_LOG(RENDERER, "VR: a screen without 3D (%u polygons, W up to %.1f) put on the 2D plane", polys, wMax);
+	return true;
+}
+
 // The cinematic letterbox: opaque black polygons on the 2D plane. Whole polygons only, so
 // one with just some black corners (a text box, a fade) is never torn apart, as the old
 // per-vertex hiding in the vertex shader did.
 static void hideLetterbox(rend_context& ctx, const std::vector<PolyParam>& list, u32 from, u32 to, float hudW)
 {
+	if (activeProfile != nullptr && activeProfile->letterboxW > 0.f)
+		hudW = activeProfile->letterboxW;
 	for (u32 n = from; n < to && n < list.size(); n++)
 	{
 		const PolyParam& pp = list[n];
@@ -470,8 +742,10 @@ static void hidePlayer2Prompt(rend_context& ctx, const RenderPass& pass, const R
 	each([&](const PolyParam& pp) {
 		Box b;
 		const u32 tex = pp.pcw.Texture ? pp.tcw.TexAddr << 3 : 0;
+		const ScreenBox& at = activeProfile != nullptr ? activeProfile->p2PromptBox : ScreenBox { 352.f, 384.f, 640.f, 480.f };
+		const float sx = fbWidth / 640.f, sy = fbHeight / 480.f;
 		if (tex == 0 || std::find(std::begin(p2PromptTextures), std::end(p2PromptTextures), tex) == std::end(p2PromptTextures)
-				|| !flat(pp, b) || b.x0 < fbWidth * 0.55f || b.y0 < fbHeight * 0.8f)
+				|| !flat(pp, b) || b.x0 < at.x0 * sx || b.y0 < at.y0 * sy || b.x1 > at.x1 * sx || b.y1 > at.y1 * sy)
 			return;
 		if (hide)
 			hideVertices(ctx, pp);
@@ -503,6 +777,34 @@ bool player2Prompting() {
 
 bool player2PromptKnown() {
 	return p2PromptTextures[0] != 0;
+}
+
+// A 3D polygon with some of its corners at the 2D plane's W (a game whose near plane is
+// there) would have just those corners pinned onto the 2D plane by the headset's vertex
+// shader, stretched across the scene. They're moved a hair off it along their rays (0.25%)
+// instead, and stay 3D.
+static void keepMixedIn3D(rend_context& ctx, const std::vector<PolyParam>& list, u32 from, u32 to, float hudW)
+{
+	for (u32 n = from; n < to && n < list.size(); n++)
+	{
+		const PolyParam& pp = list[n];
+		if (pp.count < 3 || pp.first + pp.count > ctx.verts.size())
+			continue;
+		u32 on = 0;
+		for (u32 i = pp.first; i < pp.first + pp.count; i++)
+			on += onOverlay(ctx.verts[i], hudW);
+		if (on == 0 || on == pp.count)
+			continue;
+		for (u32 i = pp.first; i < pp.first + pp.count; i++)
+		{
+			Vertex& v = ctx.verts[i];
+			if (onOverlay(v, hudW))
+				v.z = 1.f / (1.f / v.z < hudW ? hudW - 0.0025f : hudW + 0.0025f);
+		}
+		static u32 logged;
+		if (logged++ % 600 == 0)
+			NOTICE_LOG(RENDERER, "VR: kept a 3D polygon with %u of %u corners at the 2D plane's W in 3D", on, pp.count);
+	}
 }
 
 // PC: overlay-like polygons the headset's vertex shader could bend (mixed overlay and 3D
@@ -772,10 +1074,16 @@ void dropShotMarker(rend_context& ctx, const RenderPass& pass, const RenderPass&
 		hideLetterbox(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW);
 		hideLetterbox(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW);
 	}
-	snapNear2D(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight);
-	snapNear2D(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight);
-	snapNear2D(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight);
+	if (!snapFlatScreen(ctx, pass, previousPass, hudW))
+	{
+		snapNear2D(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight);
+		snapNear2D(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight);
+		snapNear2D(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight);
+	}
 	hidePlayer2Prompt(ctx, pass, previousPass, hudW, fbWidth, fbHeight);
+	keepMixedIn3D(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW);
+	keepMixedIn3D(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW);
+	keepMixedIn3D(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW);
 
 	// the recent shots, in DC framebuffer pixels
 	struct Recent { glm::vec2 gun; int64_t since, at; bool into3D; };
@@ -855,7 +1163,8 @@ void dropShotMarker(rend_context& ctx, const RenderPass& pass, const RenderPass&
 			// W 0.9..1.01, while its HUD and text sit at one W.
 			const u32 tex = pp.pcw.Texture ? pp.tcw.TexAddr << 3 : 0u;
 			const bool markerTex = tex != 0 && std::find(std::begin(markerTextures), std::end(markerTextures), tex) != std::end(markerTextures);
-			const bool nearPlane = wMin >= 0.85f && wMax <= 1.15f;
+			const bool nearPlane = (wMin >= 0.85f && wMax <= 1.15f)
+					|| (activeProfile != nullptr && wMin >= activeProfile->markerMinW && wMax <= activeProfile->markerMaxW);
 			const bool markerLike = nearPlane && (markerTex || wMax - wMin > 0.004f)
 					&& size.x <= MarkerMaxSize && size.y <= MarkerMaxSize;
 			const glm::vec2 centre = (lo + hi) * 0.5f;
