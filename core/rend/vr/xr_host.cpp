@@ -1790,9 +1790,39 @@ bool frame()
 	locateInfo.displayTime = frameState.predictedDisplayTime;
 	locateInfo.space = localSpace;
 	u32 viewCount = 0;
-	const XrViewStateFlags tracked = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+	// Drawn whenever the head's orientation is known. Without its position (a headset with no
+	// space set up, or tracking lost for a while) the eyes stay where they last were, or at
+	// eye distance around the middle: before, nothing was drawn at all, and players heard the
+	// game in a black headset.
 	const bool located = XR_SUCCEEDED(xrLocateViews(session, &locateInfo, &viewState, 2, &viewCount, views))
-			&& viewCount == 2 && (viewState.viewStateFlags & tracked) == tracked;
+			&& viewCount == 2 && (viewState.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0;
+	if (located)
+	{
+		static glm::vec3 lastEye[2];
+		static bool haveLastEye;
+		static bool warned;
+		if ((viewState.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0)
+		{
+			lastEye[0] = toVec(views[0].pose.position);
+			lastEye[1] = toVec(views[1].pose.position);
+			haveLastEye = true;
+		}
+		else
+		{
+			if (!warned)
+			{
+				warned = true;
+				WARN_LOG(RENDERER, "XR: the head's position isn't tracked: drawing from %s (orientation only)",
+						haveLastEye ? "where it last was" : "the middle");
+			}
+			const glm::vec3 right = toQuat(views[0].pose.orientation) * glm::vec3(1.f, 0.f, 0.f);
+			const glm::vec3 center = haveLastEye ? (lastEye[0] + lastEye[1]) * 0.5f : glm::vec3(0.f);
+			const float halfIpd = haveLastEye ? glm::distance(lastEye[0], lastEye[1]) * 0.5f : 0.032f;
+			const glm::vec3 eyes[2] { center - right * halfIpd, center + right * halfIpd };
+			for (int i = 0; i < 2; i++)
+				views[i].pose.position = { eyes[i].x, eyes[i].y, eyes[i].z };
+		}
+	}
 	updateOrigin(located);
 	updateLightgun(frameState.predictedDisplayTime);
 
