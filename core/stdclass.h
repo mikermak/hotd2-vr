@@ -186,6 +186,8 @@ std::string strprintf(const char *format, Args ... args)
 	return out;
 }
 
+namespace hostfs { class File; }
+
 class MD5Sum
 {
 	MD5_CTX ctx;
@@ -208,6 +210,11 @@ public:
 			MD5_Update(&ctx, buf, len);
 		return *this;
 	}
+
+	// The file's contents, from the start (hotd2-vr: without this, a hostfs::File* went to
+	// the template below and the pointer itself was hashed, so two players with the same
+	// .cue, .gdi or .cdi never matched for netplay).
+	MD5Sum& add(hostfs::File *file);
 
 	template<typename T>
 	MD5Sum& add(const T& v) {

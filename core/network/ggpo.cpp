@@ -88,9 +88,9 @@ static void getLocalInput(MapleInputState inputState[4])
 
 //#define SYNC_TEST 1
 
-#ifdef SYNC_TEST
 #include <xxhash.h>
-#endif
+#include "hw/sh4/sh4_mem.h"
+#include <cstdlib>
 
 namespace ggpo
 {
@@ -128,6 +128,7 @@ static bool absPointerPos;
 static bool keyboardGame;
 static bool mouseGame;
 static int inputSize;
+static FILE *syncLog;		// HOTD2VR_SYNCLOG (save_game_state)
 static void (*chatCallback)(int playerNum, const std::string& msg);
 
 struct MemPages
@@ -356,6 +357,32 @@ static bool save_game_state(unsigned char **buffer, int *len, int *checksum, int
 #ifdef SYNC_TEST
 	*checksum = XXH3_64bits(*buffer, usedSize);
 #endif
+	// hotd2-vr netplay test aid: with HOTD2VR_SYNCLOG set to a file name, each frame's state
+	// (the saved state, which leaves RAM to the page watcher, and main RAM) as hashes, to
+	// compare two peers. A frame saved again after a rollback: the last line counts.
+	if (syncLog != nullptr)
+		fprintf(syncLog, "%d %016llx %016llx\n", frame, (unsigned long long)XXH3_64bits(*buffer, *len),
+				(unsigned long long)XXH3_64bits(&mem_b[0], RAM_SIZE));
+	if (syncLog != nullptr && frame % 60 == 0)
+		fflush(syncLog);
+	// and with HOTD2VR_SYNCDUMP=frame[,frame...]: that frame's saved state and RAM to
+	// <synclog>.<frame>.state/.ram (again after a rollback, so the last one stays)
+	if (syncLog != nullptr)
+		if (const char *frames = getenv("HOTD2VR_SYNCDUMP"))
+			for (const char *p = frames; *p != '\0'; )
+			{
+				char *end;
+				const long f = strtol(p, &end, 10);
+				if (end == p)
+					break;
+				if (f == frame)
+				{
+					const std::string base = std::string(getenv("HOTD2VR_SYNCLOG")) + "." + std::to_string(frame);
+					if (FILE *out = fopen((base + ".state").c_str(), "wb")) { fwrite(*buffer, 1, *len, out); fclose(out); }
+					if (FILE *out = fopen((base + ".ram").c_str(), "wb")) { fwrite(&mem_b[0], 1, RAM_SIZE, out); fclose(out); }
+				}
+				p = *end == ',' ? end + 1 : end;
+			}
 	memwatch::protect();
 	if (frame > 0)
 	{
@@ -489,6 +516,9 @@ void startSession(int localPort, int localPlayerNum)
 	cb.log_game_state  = log_game_state;
 	cb.on_message      = on_message;
 
+	if (const char *path = getenv("HOTD2VR_SYNCLOG"); path != nullptr && syncLog == nullptr)
+		syncLog = fopen(path, "w");
+
 #ifdef SYNC_TEST
 	GGPOErrorCode result = ggpo_start_synctest(&ggpoSession, &cb, settings.content.gameId.c_str(), MAX_PLAYERS, sizeof(kcode[0]), 1);
 	if (result != GGPO_OK)
@@ -508,7 +538,15 @@ void startSession(int localPort, int localPlayerNum)
 	NOTICE_LOG(NETWORK, "GGPO synctest session started");
 #else
 	if (settings.platform.isConsole())
-		analogAxes = config::GGPOAnalogAxes;
+	{
+		// hotd2-vr: a light gun in port A sends where it points too (Flycast only did that
+		// for arcade games). Both peers have the same devices, so the same input size.
+		absPointerPos = config::MapleMainDevices[0] == MDT_LightGun;
+		analogAxes = absPointerPos ? 0 : (int)config::GGPOAnalogAxes;
+		keyboardGame = false;
+		mouseGame = false;
+		NOTICE_LOG(NETWORK, "GGPO: console, %s", absPointerPos ? "light gun position" : "analog axes");
+	}
 	else
 	{
 		analogAxes = 0;
@@ -536,6 +574,14 @@ void startSession(int localPort, int localPlayerNum)
 	inputSize = sizeof(kcode[0]) + analogAxes + (int)absPointerPos * sizeof(Inputs::u.absPos)
 		+ (int)keyboardGame * sizeof(Inputs::u.keys) + (int)mouseGame * sizeof(Inputs::u.relPos);
 
+	{	// which part differs when two peers don't match ("Peer verification failed")
+		auto hex = [](const u8 *d) { std::string s; char b[3]; for (int i = 0; i < 16; i++) { snprintf(b, 3, "%02x", d[i]); s += b; } return s; };
+		NOTICE_LOG(NETWORK, "GGPO verif: bios %s game %s nvmem %s nvmem2 %s eeprom %s vmu %s state %s",
+				hex(settings.network.md5.bios).c_str(), hex(settings.network.md5.game).c_str(),
+				hex(settings.network.md5.nvmem).c_str(), hex(settings.network.md5.nvmem2).c_str(),
+				hex(settings.network.md5.eeprom).c_str(), hex(settings.network.md5.vmu).c_str(),
+				hex(settings.network.md5.savestate).c_str());
+	}
 	VerificationData verif;
 	MD5Sum().add(settings.network.md5.bios)
 			.add(settings.network.md5.game)
@@ -616,6 +662,11 @@ void stopSession()
 		return;
 	ggpo_close_session(ggpoSession);
 	ggpoSession = nullptr;
+	if (syncLog != nullptr)
+	{
+		fclose(syncLog);
+		syncLog = nullptr;
+	}
 	miniupnp.Term();
 	emu.setNetworkState(false);
 	memwatch::unprotect();

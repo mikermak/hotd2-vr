@@ -39,6 +39,10 @@ u32 fskip;
 
 static u32 lightgun_line = 0xffff;
 static u32 lightgun_hpos;
+// alternates the position by a pixel (read_lightgun_position); in netplay's rollback states
+// too (hotd2-vr): a static outside them came back different on each peer after a rollback,
+// so the two games saw the gun a pixel apart and drifted (a hit on one, a miss on the other)
+static u32 lightgun_flip;
 static bool maple_int_pending;
 
 #ifdef LIBRETRO
@@ -243,7 +247,6 @@ static int spg_line_sched(int tag, int cycles, int jitter, void *arg)
 
 void read_lightgun_position(int x, int y)
 {
-	static u32 flip;
 	maple_int_pending = true;
 	if (y < 0 || y >= 480 || x < 0 || x >= 640)
 	{
@@ -255,9 +258,9 @@ void read_lightgun_position(int x, int y)
 		lightgun_line = y / (SPG_CONTROL.interlace ? 2 : 1) + SPG_VBLANK_INT.vblank_out_interrupt_line_number;
 		// For some reason returning the same position twice makes it register off screen.
 		// Atomiswave Clay Challenge wants more wiggle than others for shots to register.
-		lightgun_line ^= (flip >> 1) & 1;
-		lightgun_hpos = (x + 286) ^ (flip & 1);
-		flip++;
+		lightgun_line ^= (lightgun_flip >> 1) & 1;
+		lightgun_hpos = (x + 286) ^ (lightgun_flip & 1);
+		lightgun_flip++;
 	}
 }
 
@@ -288,6 +291,7 @@ void spg_Reset(bool hard)
 	maple_int_pending = false;
 	lightgun_line = 0xffff;
 	lightgun_hpos = 0;
+	lightgun_flip = 0;
 }
 
 void scheduleRenderDone(TA_context *cntx)
@@ -319,6 +323,8 @@ void spg_Serialize(Serializer& ser)
 	ser << Frame_Cycles;
 	ser << lightgun_line;
 	ser << lightgun_hpos;
+	if (ser.rollback())		// (savestate files stay as they are)
+		ser << lightgun_flip;
 }
 void spg_Deserialize(Deserializer& deser)
 {
@@ -332,4 +338,6 @@ void spg_Deserialize(Deserializer& deser)
 	deser >> Frame_Cycles;
 	deser >> lightgun_line;
 	deser >> lightgun_hpos;
+	if (deser.rollback())
+		deser >> lightgun_flip;
 }
