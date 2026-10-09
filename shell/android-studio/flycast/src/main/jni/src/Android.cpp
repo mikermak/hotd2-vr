@@ -273,6 +273,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_flycast_emulator_emu_JNIdc_pause(JNIE
 {
 	if (config::GGPOEnable)
 	{
+		// hotd2-vr: in the headset, lifting it off or a system menu pauses the activity; the
+		// XR side lets go of the guns and keeps the frames going, so an online game goes on
+		// for the other player instead of ending for both
+		if (config::VrXr)
+			return;
 		stopEmu();
 		gui_stop_game();
 	}
@@ -288,7 +293,8 @@ extern "C" JNIEXPORT void JNICALL Java_com_flycast_emulator_emu_JNIdc_pause(JNIE
 
 extern "C" JNIEXPORT void JNICALL Java_com_flycast_emulator_emu_JNIdc_resume(JNIEnv *env,jobject obj)
 {
-    if (game_started)
+    // (hotd2-vr: an online game in the headset was never paused, see JNIdc_pause)
+    if (game_started && !emu.running())
     {
     	game_started = false;
 		savestateThread.WaitToEnd();

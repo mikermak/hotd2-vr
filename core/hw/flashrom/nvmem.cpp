@@ -252,14 +252,21 @@ static std::string getArcadeFlashPath()
 static bool loadFlash()
 {
 	bool rc = true;
+	// hotd2-vr: online (GGPO) both sides need the same flash, and each player's own holds a
+	// console ID of its own (random, made on the first solo game) and arcade bookkeeping:
+	// a blank one in memory, made the same on both sides (fixUpDCFlash with the fixed
+	// netplay clock), and never saved over the player's file (saveFiles)
 	if (settings.platform.isConsole()) {
-		rc = sys_nvmem->Load(getRomPrefix(), "%nvmem.bin", "nvram");
+		if (config::GGPOEnable)
+			memset(sys_nvmem->data, 0, sys_nvmem->size);
+		else
+			rc = sys_nvmem->Load(getRomPrefix(), "%nvmem.bin", "nvram");
 		fixUpDCFlash();
 	}
 	else if (!settings.naomi.slave)
 	{
 		const std::string path = getArcadeFlashPath();
-		rc = sys_nvmem->Load(path);
+		rc = !config::GGPOEnable && sys_nvmem->Load(path);
 		if (!rc)
 		{
 			std::string flashName = get_file_basename(settings.content.fileName) + ".nvmem";
@@ -317,6 +324,8 @@ bool loadFiles()
 void saveFiles()
 {
 	if (settings.naomi.slave || settings.naomi.drivingSimSlave)
+		return;
+	if (config::GGPOEnable)		// (an online game's flash is a blank one, see loadFlash)
 		return;
 	if (settings.platform.isConsole())
 		sys_nvmem->Save(getRomPrefix(), "nvmem.bin", "nvmem");

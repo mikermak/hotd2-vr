@@ -110,8 +110,25 @@ static bool loadDisk(const std::string& path)
 	if (disc != NULL)
 	{
 		if (config::GGPOEnable)
-			MD5Sum().add(digest)
-					.getDigest(settings.network.md5.game);
+		{
+			// the files' bytes, and (hotd2-vr) the layout the .cue/.gdi sheet gives them:
+			// where each track starts and ends, its control bits, the disc type. The game
+			// reads that (the TOC, where each sector is), so it must match too.
+			MD5Sum md5;
+			md5.add(digest)
+					.add((u32)disc->type)
+					.add(disc->EndFAD)
+					.add(disc->LeadOut.StartFAD)
+					.add(disc->LeadOut.CTRL)
+					.add(disc->LeadOut.ADR)
+					.add((u32)disc->sessions.size());
+			for (const Session& ses : disc->sessions)
+				md5.add(ses.StartFAD).add(ses.FirstTrack);
+			md5.add((u32)disc->tracks.size());
+			for (const Track& t : disc->tracks)
+				md5.add(t.StartFAD).add(t.EndFAD).add(t.CTRL).add(t.ADR);
+			md5.getDigest(settings.network.md5.game);
+		}
 		INFO_LOG(GDROM, "gdrom: Opened image \"%s\"", path.c_str());
 	}
 	else

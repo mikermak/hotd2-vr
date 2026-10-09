@@ -20,38 +20,55 @@
 
 void dc_serialize(Serializer& ser)
 {
+	// hotd2-vr netplay test aid: with HOTD2VR_SYNCLOG set, where each part of a rollback state
+	// starts, logged once (to tell which part differs between two dumped states)
+	static bool sectLogged;
+	const bool logSect = !sectLogged && ser.rollback() && getenv("HOTD2VR_SYNCLOG") != nullptr;
+	auto sect = [&](const char *name) { if (logSect) NOTICE_LOG(SAVESTATE, "State part %s at %u", name, (u32)ser.size()); };
+	sect("aica");
 	aica::serialize(ser);
-
+	sect("sb");
 	sb_serialize(ser);
-
+	sect("nvmem");
 	nvmem::serialize(ser);
-
+	sect("gdrom");
 	gdrom::serialize(ser);
-
+	sect("maple");
 	mcfg_SerializeDevices(ser);
-
+	sect("pvr");
 	pvr::serialize(ser);
-
+	sect("sh4");
 	sh4::serialize(ser);
 
+	sect("bba");
 	ser << config::EmulateBBA.get();
 	if (config::EmulateBBA)
 		bba_Serialize(ser);
+	sect("modem");
 	ModemSerialize(ser);
 
+	sect("sh4-2");
 	sh4::serialize2(ser);
 
+	sect("gdr");
 	libGDR_serialize(ser);
 
+	sect("naomi");
 	naomi_Serialize(ser);
 
 	ser << config::Broadcast.get();
 	ser << config::Cable.get();
 	ser << config::Region.get();
 
+	sect("naomi_cart");
 	naomi_cart_serialize(ser);
+	sect("reios");
 	reios_serialize(ser);
+	sect("achievements");
 	achievements::serialize(ser);
+	sect("end");
+	if (logSect)
+		sectLogged = true;
 
 	DEBUG_LOG(SAVESTATE, "Saved %d bytes", (u32)ser.size());
 }

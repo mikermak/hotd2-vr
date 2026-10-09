@@ -63,10 +63,12 @@ protected:
 
 	u8 *dimm_data = nullptr;
 	u32 dimm_data_size = 0;
-	u16 dimm_command;
-	u16 dimm_offsetl;
-	u16 dimm_parameterl;
-	u16 dimm_parameterh;
+	// (hotd2-vr: given a value: they held whatever was in the heap, which the BIOS reads at
+	// boot, so two copies of the same game could start differently; netplay drifted apart)
+	u16 dimm_command = 0xffff;
+	u16 dimm_offsetl = 0xffff;
+	u16 dimm_parameterl = 0xffff;
+	u16 dimm_parameterh = 0xffff;
 	static constexpr u16 DIMM_STATUS = 0x111;
 	int schedId;
 

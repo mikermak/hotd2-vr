@@ -25,6 +25,7 @@
 #include "types.h"
 #include "shil.h"
 #include "blockmanager.h"
+#include "cfg/option.h"
 
 class SSAOptimizer
 {
@@ -152,7 +153,11 @@ private:
 
 	void SingleBranchTargetPass()
 	{
-		if (block->read_only)
+		// (not online, hotd2-vr: whether a block is read_only depends on the block cache's
+		// history, which a netplay rollback doesn't restore and the two sides don't share,
+		// and skipping a branch changes the block's cycles and next address: the vblank and
+		// timer events then landed on other instructions on the side that rolled back)
+		if (block->read_only && !config::GGPOEnable)
 		{
 			bool updateCycles = !skipSingleBranchTarget(block->BranchBlock, true);
 			skipSingleBranchTarget(block->NextBlock, updateCycles);

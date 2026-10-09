@@ -428,6 +428,8 @@ namespace recompiler {
 void init();
 void term();
 void flush();
+// times flush() ran (netplay: a rollback across one needs another, ggpo.cpp)
+extern u32 flushCount;
 void compile();
 void *getMemOp(bool load, bool byte);
 template<u32 Pd> void DYNACALL MSR_do(u32 v, u32 mask);

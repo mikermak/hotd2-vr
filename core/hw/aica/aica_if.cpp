@@ -54,6 +54,10 @@ u32 GetRTC_now()
 	return (20 * 365 + 5) * 24 * 60 * 60 + rawtime + time_offset;
 }
 
+u32 GetRTC() {
+	return RealTimeClock;
+}
+
 template<typename T>
 T readRtcReg(u32 addr)
 {

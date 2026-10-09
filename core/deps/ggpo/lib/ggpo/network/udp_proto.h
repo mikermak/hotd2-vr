@@ -147,6 +147,7 @@ protected:
    bool           _connected;
    int            _send_latency;
    int            _oop_percent;
+   int            _loss_percent;
    struct {
       int         send_time;
       sockaddr_in dest_addr;

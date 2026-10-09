@@ -116,9 +116,16 @@ void onStart()
 		std::lock_guard<std::mutex> lock(failureMutex);
 		lastFailure.clear();
 	}
-	// The run: in the headset, or on the PC when asked (vr.HandsPrep, for testing)
+	// The run: in the headset, or on the PC when asked (vr.HandsPrep, for testing). Never
+	// online: it presses Start for this side's player in the shared game (watching for the
+	// scene in play still makes the model when it comes by).
 	if (!xr::enabled() && !config::VrHandsPrep)
 		return;
+	if (config::GGPOEnable)
+	{
+		NOTICE_LOG(RENDERER, "VR hands: online, no run for the model (watching for it in play)");
+		return;
+	}
 	std::fill(std::begin(recent3D), std::end(recent3D), 0u);
 	std::fill(std::begin(recentPasses), std::end(recentPasses), 0u);
 	recentAt = 0;

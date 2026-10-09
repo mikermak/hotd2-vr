@@ -85,6 +85,12 @@ static void getLocalInput(MapleInputState inputState[4])
 #include "imgui.h"
 #include "miniupnp.h"
 #include "hw/naomi/naomi_cart.h"
+#include "hw/maple/maple_if.h"
+#include "hw/pvr/pvr_mem.h"
+#include "hw/aica/aica_if.h"
+#include "rend/vr_reproject.h"
+#include "hw/sh4/dyna/blockmanager.h"
+#include "hw/arm7/arm7_rec.h"
 
 //#define SYNC_TEST 1
 
@@ -105,7 +111,7 @@ constexpr u32 BTN_TRIGGER_RIGHT	= DC_BTN_BITMAPPED_LAST << 2;
 #pragma pack(push, 1)
 struct VerificationData
 {
-	const int protocol = 2;
+	const int protocol = 3;		// hotd2-vr: 3 also covers the devices and the VR mod's writes (gameMD5)
 	u8 gameMD5[16] { };
 	u8 stateMD5[16] { };
 } ;
@@ -129,6 +135,7 @@ static bool keyboardGame;
 static bool mouseGame;
 static int inputSize;
 static FILE *syncLog;		// HOTD2VR_SYNCLOG (save_game_state)
+static struct { s16 x, y; } heldAim;	// the local light gun's position as last sent (nextFrame)
 static void (*chatCallback)(int playerNum, const std::string& msg);
 
 struct MemPages
@@ -289,6 +296,53 @@ static bool advance_frame(int)
  * should make the current game state match the state contained in the
  * buffer.
  */
+// hotd2-vr netplay test aid: with HOTD2VR_ROLLBACKCHECK set, a full copy of main RAM is kept
+// for each saved frame, and after a rollback the restored RAM is compared with it. The
+// page deltas only restore what the page watcher saw being written, so a write it missed
+// (another mapping, a DMA) shows here, on one copy, the first time it happens.
+static std::unordered_map<int, std::vector<u8>> ramCopies;
+#if FEAT_AREC == DYNAREC_JIT
+static std::unordered_map<int, u32> armFlushes;	// per saved frame: the ARM7 recompiler's flushCount
+#endif
+
+static void keepRamCopy(int frame)
+{
+	if (getenv("HOTD2VR_ROLLBACKCHECK") == nullptr)
+		return;
+	std::vector<u8>& copy = ramCopies[frame];
+	copy.assign(&mem_b[0], &mem_b[0] + RAM_SIZE);
+	for (auto it = ramCopies.begin(); it != ramCopies.end(); )
+		it = it->first < frame - 16 || it->first > frame ? ramCopies.erase(it) : std::next(it);
+}
+
+static void checkRestoredRam(int frame)
+{
+	if (getenv("HOTD2VR_ROLLBACKCHECK") == nullptr)
+		return;
+	auto it = ramCopies.find(frame);
+	if (it == ramCopies.end())
+	{
+		WARN_LOG(NETWORK, "Rollback check: no copy of frame %d", frame);
+		return;
+	}
+	const u8 *saved = it->second.data();
+	int bad = 0;
+	for (u32 page = 0; page < RAM_SIZE; page += PAGE_SIZE)
+		if (memcmp(saved + page, &mem_b[page], PAGE_SIZE) != 0)
+		{
+			if (bad++ < 8)
+			{
+				u32 at = page;
+				while (saved[at] == mem_b[at])
+					at++;
+				ERROR_LOG(NETWORK, "Rollback check: frame %d (last saved %d) RAM page %06x differs after the restore, first at %06x: saved %02x now %02x",
+						frame, lastSavedFrame, page, at, saved[at], mem_b[at]);
+			}
+		}
+	if (bad > 0)
+		ERROR_LOG(NETWORK, "Rollback check: frame %d, %d pages restored wrong", frame, bad);
+}
+
 static bool load_game_state(unsigned char *buffer, int len)
 {
 	INFO_LOG(NETWORK, "load_game_state");
@@ -303,7 +357,12 @@ static bool load_game_state(unsigned char *buffer, int len)
 	{
 		const MemPages& pages = deltaStates[f];
 		for (const auto& pair : pages.ram)
+		{
 			memcpy(memwatch::ramWatcher.getMemPage(pair.first), &pair.second.data[0], PAGE_SIZE);
+			// (hotd2-vr: the code compiled from what was there drops, as for a write the
+			// game makes; otherwise newer code could run over the restored older bytes)
+			bm_RamWriteAccess(pair.first);
+		}
 		for (const auto& pair : pages.vram)
 			memcpy(memwatch::vramWatcher.getMemPage(pair.first), &pair.second.data[0], PAGE_SIZE);
 		for (const auto& pair : pages.aram)
@@ -319,6 +378,17 @@ static bool load_game_state(unsigned char *buffer, int len)
 		ERROR_LOG(NETWORK, "load_game_state len %d used %d", len, (int)deser.size());
 		die("fatal");
 	}
+	checkRestoredRam(frame);
+#if FEAT_AREC == DYNAREC_JIT
+	// hotd2-vr: the ARM7's compiled code comes from sound RAM and is only dropped when the
+	// ARM is reset (a new sound driver). A rollback across that reset ran the new driver's
+	// code at the old one's addresses.
+	{
+		auto it = armFlushes.find(frame);
+		if (it == armFlushes.end() || it->second != aica::arm::recompiler::flushCount)
+			aica::arm::recompiler::flush();
+	}
+#endif
 	rend_allow_rollback();	// ggpo might load another state right after this one
 	memwatch::reset();
 	memwatch::protect();
@@ -359,12 +429,66 @@ static bool save_game_state(unsigned char **buffer, int *len, int *checksum, int
 #endif
 	// hotd2-vr netplay test aid: with HOTD2VR_SYNCLOG set to a file name, each frame's state
 	// (the saved state, which leaves RAM to the page watcher, and main RAM) as hashes, to
-	// compare two peers. A frame saved again after a rollback: the last line counts.
+	// compare two peers, and when (ms, steady clock), then video and sound RAM. A frame saved
+	// again after a rollback: the last line counts.
 	if (syncLog != nullptr)
-		fprintf(syncLog, "%d %016llx %016llx\n", frame, (unsigned long long)XXH3_64bits(*buffer, *len),
-				(unsigned long long)XXH3_64bits(&mem_b[0], RAM_SIZE));
+		fprintf(syncLog, "%d %016llx %016llx %lld %016llx\n", frame, (unsigned long long)XXH3_64bits(*buffer, *len),
+				(unsigned long long)XXH3_64bits(&mem_b[0], RAM_SIZE),
+				(long long)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count(),
+				(unsigned long long)(XXH3_64bits(&vram[0], VRAM_SIZE) ^ (XXH3_64bits(&aica::aica_ram[0], ARAM_SIZE) * 31)));
 	if (syncLog != nullptr && frame % 60 == 0)
 		fflush(syncLog);
+	// and with HOTD2VR_SYNCREGION=offset,size,fromFrame,toFrame: that part of main RAM on every
+	// save in those frames, appended to <synclog>.region as (s32 frame, bytes) (what differs)
+	if (syncLog != nullptr)
+		if (const char *region = getenv("HOTD2VR_SYNCREGION"))
+		{
+			unsigned long offset = 0, size = 0;
+			long from = 0, to = -1;
+			if (sscanf(region, "%li,%li,%ld,%ld", (long *)&offset, (long *)&size, &from, &to) == 4
+					&& frame >= from && frame <= to && offset + size <= RAM_SIZE)
+			{
+				static FILE *out;
+				static FILE *outOf;
+				if (outOf != syncLog)
+				{
+					if (out != nullptr)
+						fclose(out);
+					out = fopen((std::string(getenv("HOTD2VR_SYNCLOG")) + ".region").c_str(), "wb");
+					outOf = syncLog;
+				}
+				if (out != nullptr)
+				{
+					const s32 f = frame;
+					fwrite(&f, sizeof(f), 1, out);
+					fwrite(&mem_b[offset], 1, size, out);
+					fflush(out);		// (the test closes the copies by killing them)
+				}
+			}
+		}
+	// and with HOTD2VR_SYNCPAGES set: main RAM per 64 KB page, to <synclog>.pages (where a
+	// difference is, when it shows up in a run that can't be repeated)
+	if (syncLog != nullptr && getenv("HOTD2VR_SYNCPAGES") != nullptr)
+	{
+		static FILE *pages;
+		static FILE *pagesOf;
+		if (pagesOf != syncLog)
+		{
+			if (pages != nullptr)
+				fclose(pages);
+			pages = fopen((std::string(getenv("HOTD2VR_SYNCLOG")) + ".pages").c_str(), "w");
+			pagesOf = syncLog;
+		}
+		if (pages != nullptr)
+		{
+			fprintf(pages, "%d", frame);
+			for (u32 page = 0; page < RAM_SIZE; page += 64_KB)
+				fprintf(pages, " %016llx", (unsigned long long)XXH3_64bits(&mem_b[page], 64_KB));
+			fputc('\n', pages);
+			if (frame % 60 == 0)
+				fflush(pages);
+		}
+	}
 	// and with HOTD2VR_SYNCDUMP=frame[,frame...]: that frame's saved state and RAM to
 	// <synclog>.<frame>.state/.ram (again after a rollback, so the last one stays)
 	if (syncLog != nullptr)
@@ -383,6 +507,12 @@ static bool save_game_state(unsigned char **buffer, int *len, int *checksum, int
 				}
 				p = *end == ',' ? end + 1 : end;
 			}
+	keepRamCopy(frame);
+#if FEAT_AREC == DYNAREC_JIT
+	armFlushes[frame] = aica::arm::recompiler::flushCount;
+	for (auto it = armFlushes.begin(); it != armFlushes.end(); )
+		it = it->first < frame - 16 || it->first > frame ? armFlushes.erase(it) : std::next(it);
+#endif
 	memwatch::protect();
 	if (frame > 0)
 	{
@@ -518,6 +648,7 @@ void startSession(int localPort, int localPlayerNum)
 
 	if (const char *path = getenv("HOTD2VR_SYNCLOG"); path != nullptr && syncLog == nullptr)
 		syncLog = fopen(path, "w");
+	heldAim = {};
 
 #ifdef SYNC_TEST
 	GGPOErrorCode result = ggpo_start_synctest(&ggpoSession, &cb, settings.content.gameId.c_str(), MAX_PLAYERS, sizeof(kcode[0]), 1);
@@ -569,7 +700,7 @@ void startSession(int localPort, int localPlayerNum)
 					analogAxes = std::max(analogAxes, (int)axis.axis + 1);
 			}
 		}
-		NOTICE_LOG(NETWORK, "GGPO: Using %d full analog axes", analogAxes);
+		NOTICE_LOG(NETWORK, "GGPO: Using %d full analog axes%s", analogAxes, absPointerPos ? ", light gun position" : "");
 	}
 	inputSize = sizeof(kcode[0]) + analogAxes + (int)absPointerPos * sizeof(Inputs::u.absPos)
 		+ (int)keyboardGame * sizeof(Inputs::u.keys) + (int)mouseGame * sizeof(Inputs::u.relPos);
@@ -583,9 +714,54 @@ void startSession(int localPort, int localPlayerNum)
 				hex(settings.network.md5.savestate).c_str());
 	}
 	VerificationData verif;
-	MD5Sum().add(settings.network.md5.bios)
-			.add(settings.network.md5.game)
-			.getDigest(verif.gameMD5);
+	{
+		// hotd2-vr: also the devices plugged in (a light gun in port B on one side only was a
+		// different game with no error), what the VR mod writes into the game's memory, and
+		// the CPU. Each part is logged, so a refusal says what differed.
+		u8 devices[16], vrWrites[16], cpu[16], emuSettings[16];
+		MD5Sum devMd5;
+		if (settings.platform.isConsole())
+			for (int i = 0; i < MAPLE_PORTS; i++)
+				for (int j = 0; j < 6; j++)
+				{
+					const u8 type = MapleDevices[i][j] != nullptr ? (u8)MapleDevices[i][j]->get_device_type() : (u8)MDT_None;
+					devMd5.add(type);
+				}
+		devMd5.getDigest(devices);
+		MD5Sum vrMd5;
+		vr::netplayDigest(vrMd5);
+		vrMd5.getDigest(vrWrites);
+		// The CPU: arm64 (the Quest) and x64 don't round the same. The arm64 dynarec does
+		// fmac fused (x64 doesn't online), and its compiler may fuse multiply-adds in the
+		// C code the dynarecs fall back to (fipr, ftrv). Until that's made the same, a
+		// Quest and a PC don't play together.
+#if defined(__aarch64__) || defined(_M_ARM64)
+		const char arch[] = "arm64";
+#else
+		const char arch[] = "other";
+#endif
+		MD5Sum().add(arch, (unsigned long)sizeof(arch)).getDigest(cpu);
+		// The player's settings that reach the emulated machine (the video cable the game
+		// reads, the sound DSP, the RAM size) and the ones forced online (emulator.cpp)
+		MD5Sum().add((u8)config::Cable)
+				.add((u8)config::DSPEnabled)
+				.add((u32)settings.platform.ram_size)
+				.add((u8)config::FastGDRomLoad)
+				.add((u8)config::DynarecEnabled)
+				.add((u8)config::ForceFreePlay)
+				.add((s32)config::Sh4Clock)
+				.getDigest(emuSettings);
+		auto hex = [](const u8 *d) { std::string s; char b[3]; for (int i = 0; i < 16; i++) { snprintf(b, 3, "%02x", d[i]); s += b; } return s; };
+		NOTICE_LOG(NETWORK, "GGPO verif: devices %s vr %s cpu %s (%s) settings %s", hex(devices).c_str(), hex(vrWrites).c_str(),
+				hex(cpu).c_str(), arch, hex(emuSettings).c_str());
+		MD5Sum().add(settings.network.md5.bios)
+				.add(settings.network.md5.game)
+				.add(devices)
+				.add(vrWrites)
+				.add(cpu)
+				.add(emuSettings)
+				.getDigest(verif.gameMD5);
+	}
 	auto& digest = settings.network.md5.savestate;
 	if (std::find_if(std::begin(digest), std::end(digest), [](u8 b) { return b != 0; }) != std::end(digest))
 		memcpy(verif.stateMD5, digest, sizeof(digest));
@@ -785,8 +961,19 @@ bool nextFrame()
 		}
 		else if (absPointerPos)
 		{
-			inputs.u.absPos.x = mo_x_abs[0];
-			inputs.u.absPos.y = mo_y_abs[0];
+			// hotd2-vr: a Dreamcast light gun's position only counts when the game latches it,
+			// for a shot (or a reload, off the screen). So it is sent while the trigger or
+			// reload is down and held in between: the other side predicts the last input, and
+			// a gun that keeps moving made nearly every prediction wrong (rollbacks). (An arcade
+			// gun is read on every poll, so it always goes as it is.)
+			const u32 gunButtons = DC_BTN_A | DC_BTN_RELOAD;
+			if (!settings.platform.isConsole() || (kcode[0] & gunButtons) != gunButtons)
+			{
+				heldAim.x = mo_x_abs[0];
+				heldAim.y = mo_y_abs[0];
+			}
+			inputs.u.absPos.x = heldAim.x;
+			inputs.u.absPos.y = heldAim.y;
 		}
 		else if (keyboardGame)
 		{

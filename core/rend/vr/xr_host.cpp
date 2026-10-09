@@ -1355,8 +1355,10 @@ void updateLightgun(XrTime time)
 	const bool leftStart = boolAction(startAction, Left);
 	const bool rightStart = boolAction(startAction, Right);
 	// Joining takes both controllers (with one, the left Start stays player 1's) and a game
-	// that shows when player 2 is out again (its profile knows the prompt).
-	const bool canJoin = config::VrDualWield && player2PromptKnown() && tracked[Left] && tracked[Right];
+	// that shows when player 2 is out again (its profile knows the prompt). Not online:
+	// player 2 is the other player there, and only this side's player 1 is sent (both Start
+	// buttons are then that player's).
+	const bool canJoin = config::VrDualWield && !config::GGPOEnable && player2PromptKnown() && tracked[Left] && tracked[Right];
 	if (canJoin && leftStart && !leftStartWas && !dualWield)
 	{
 		dualWield = true;
@@ -1371,7 +1373,7 @@ void updateLightgun(XrTime time)
 		NOTICE_LOG(INPUT, "XR: player 2 joins: a gun in each hand");
 	}
 	leftStartWas = leftStart;
-	if (dualWield && (!config::VrDualWield || !player2PromptKnown()
+	if (dualWield && (!config::VrDualWield || config::GGPOEnable || !player2PromptKnown()
 			|| ((time - dualSince) > 4'000'000'000LL && player2Prompting())))
 	{
 		dualWield = false;

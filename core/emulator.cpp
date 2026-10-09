@@ -876,6 +876,18 @@ void loadGameSpecificSettings()
 
 	if (config::GGPOEnable || settings.raHardcoreMode)
 		config::Sh4Clock.override(200);
+	if (config::GGPOEnable)
+	{
+		// hotd2-vr: online, these per-machine settings change what the emulated machine does
+		// (disc DMA timing, cycle counting, NAOMI coins), so both sides use the same; the
+		// ones left to the player (cable, DSP, RAM size) are checked when connecting
+		config::FastGDRomLoad.override(false);
+		config::DynarecEnabled.override(true);
+		// (Free Play on, unless the game turned it off: medal games in hopper::init, Radirgy
+		// Noa in loadSpecialSettings; that is the same on both sides)
+		if (!config::ForceFreePlay.isOverridden())
+			config::ForceFreePlay.override(true);
+	}
 	if (settings.raHardcoreMode)
 	{
 		config::WidescreenGameHacks.override(false);
@@ -992,9 +1004,13 @@ void Emulator::start()
 	}
 	state = Running;
 	SetMemoryHandlers();
-	if (config::GGPOEnable && config::ThreadedRendering)
-		// Not supported with GGPO
+	if (config::GGPOEnable)
+	{
+		// Not supported with GGPO: these write the host GPU's pixels into the emulated VRAM
+		// (hotd2-vr: also without threaded rendering), and re-simulated frames aren't drawn
 		config::EmulateFramebuffer.override(false);
+		config::RenderToTextureBuffer.override(false);
+	}
 	setupPtyPipe();
 
 	memwatch::protect();

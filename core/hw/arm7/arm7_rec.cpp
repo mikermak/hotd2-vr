@@ -654,8 +654,11 @@ void compile()
 	arm_printf("arm7rec_compile done: %p,%p", rv, icPtr);
 }
 
+u32 flushCount;
+
 void flush()
 {
+	flushCount++;
 	icPtr = ICache;
 	arm7backend_flush();
 	verify(arm_compilecode != nullptr);

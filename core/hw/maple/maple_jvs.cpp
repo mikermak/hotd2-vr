@@ -198,7 +198,13 @@ std::shared_ptr<maple_device> MIE::Create() {
 /*
  * Sega JVS I/O board
 */
+// (in netplay's rollback states too, hotd2-vr: outside them a coin pressed on the frame a
+// rollback went back to was counted on one side only)
 static bool old_coin_chute[4];
+// The MIE firmware being uploaded (MDC_JVSUploadFirmware; its hash picks the protocol). In
+// netplay's rollback states (hotd2-vr): a rollback across the end of the upload hashed
+// only the chunks sent again, so the side that rolled back could pick another protocol.
+static u8 *jvsFirmware;
 
 class jvs_io_board
 {
@@ -1327,7 +1333,7 @@ u32 BaseMIE::RawDma(const u32 *buffer_in, u32 buffer_in_len, u32 *buffer_out)
 
 		case MDC_JVSUploadFirmware:
 		{
-			static u8 *ram;
+			u8 *&ram = jvsFirmware;
 
 			if (ram == nullptr)
 				ram = (u8 *)calloc(0x10000, 1);
@@ -1614,7 +1620,8 @@ MIEImpl::MIEImpl()
 
 	std::string eeprom_file = getEepromPath();
 	FILE* f = nullptr;
-	if (!eeprom_file.empty())
+	// (hotd2-vr: online, the default one on both sides, not the player's own)
+	if (!eeprom_file.empty() && !config::GGPOEnable)
 		f = nowide::fopen(eeprom_file.c_str(), "rb");
 	if (f != nullptr)
 	{
@@ -1893,7 +1900,7 @@ void MIEImpl::handle_86_subcommand()
 			memcpy(eeprom + address, dma_buffer_in + 4, size);
 
 			std::string eeprom_file = getEepromPath();
-			if (!eeprom_file.empty())
+			if (!eeprom_file.empty() && !config::GGPOEnable)	// (not over the player's own when online)
 			{
 				FILE* f = nowide::fopen(eeprom_file.c_str(), "wb");
 				if (f)
@@ -2033,6 +2040,13 @@ void MIEImpl::serialize(Serializer& ser) const
 	ser << board_count;
 	for (u32 i = 0; i < io_boards.size(); i++)
 		io_boards[i]->serialize(ser);
+	if (ser.rollback())		// (savestate files stay as they are)
+	{
+		const bool uploading = jvsFirmware != nullptr;
+		ser << uploading;
+		if (uploading)
+			ser.serialize(jvsFirmware, 0x10000);
+	}
 }
 void MIEImpl::deserialize(Deserializer& deser)
 {
@@ -2052,6 +2066,22 @@ void MIEImpl::deserialize(Deserializer& deser)
 	deser.skip(sizeof(size_t) - sizeof(u32), Deserializer::V23);
 	for (u32 i = 0; i < board_count; i++)
 		io_boards[i]->deserialize(deser);
+	if (deser.rollback())
+	{
+		bool uploading;
+		deser >> uploading;
+		if (uploading)
+		{
+			if (jvsFirmware == nullptr)
+				jvsFirmware = (u8 *)calloc(0x10000, 1);
+			deser.deserialize(jvsFirmware, 0x10000);
+		}
+		else
+		{
+			free(jvsFirmware);
+			jvsFirmware = nullptr;
+		}
+	}
 }
 
 u16 jvs_io_board::read_analog_axis(int player_num, int player_axis, bool inverted)
@@ -2484,6 +2514,8 @@ void jvs_io_board::serialize(Serializer& ser) const
 	ser << node_id;
 	ser << lightgun_as_analog;
 	ser << coin_count;
+	if (ser.rollback())		// (savestate files stay as they are)
+		ser << old_coin_chute;
 }
 void jvs_io_board::deserialize(Deserializer& deser)
 {
@@ -2493,6 +2525,8 @@ void jvs_io_board::deserialize(Deserializer& deser)
 		deser >> coin_count;
 	else
 		memset(coin_count, 0, sizeof(coin_count));
+	if (deser.rollback())
+		deser >> old_coin_chute;
 }
 
 // Emulates a 838-14245-92 maple to RS232 converter

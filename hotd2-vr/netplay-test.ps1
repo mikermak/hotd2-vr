@@ -1,33 +1,70 @@
 <#
-  Netplay test on one PC: two copies of the Windows build play HOTD2 together over GGPO on
+  Netplay test on one PC: two copies of the Windows build play a game together over GGPO on
   localhost (host = player 1, guest = player 2), with the VR reprojection on, each driven by
   the UDP light gun (menus, then shooting and reloading at made-up spots, the guest joining
-  with Start), window shots of both, and at the end their per-frame state hashes compared
-  (HOTD2VR_SYNCLOG, ggpo.cpp): whether the two stay the same game.
+  with Start), window shots of both, and at the end their per-frame memory compared (main,
+  video and sound RAM; HOTD2VR_SYNCLOG, ggpo.cpp): whether the two stay the same game. Also
+  how much was rolled back and how fast it ran.
 
-  .\hotd2-vr\netplay-test.ps1                  150 s, no input delay
-  .\hotd2-vr\netplay-test.ps1 -Seconds 200 -Delay 2
+  .\hotd2-vr\netplay-test.ps1                              HOTD2 PAL, 150 s, a perfect network
+  .\hotd2-vr\netplay-test.ps1 -Quest                       vr.FovScale 2 (online the game's
+                                                           profile sets that on both sides anyway)
+  .\hotd2-vr\netplay-test.ps1 -OwnSaves                    each copy its own flash and memory
+                                                           card (as two headsets): must still match
+  .\hotd2-vr\netplay-test.ps1 -NetDelay 80 -Loss 2         a bad connection: 80 ms each way
+                                                           (with jitter), 2% of packets lost
+  .\hotd2-vr\netplay-test.ps1 -Game us -GamePath X.chd     the US version
+  .\hotd2-vr\netplay-test.ps1 -Game mok                    The Maze of the Kings (naomi\mok.zip)
+
+  -Delay is GGPO's input delay in frames (fewer rollbacks, a later shot), -Oop the percentage of
+  packets sent out of order, -Dump frames to write state + RAM of (e.g. '2,3860'), -Pages a hash
+  of main RAM per 64 KB page every frame (sync.txt.pages), to find where a difference is.
 
   Each copy gets its own folder (run\netplay\host and guest, next to this repository or in
   $env:HOTD2VR_DATA) with flycast.exe and the same memory card and flash, so both start
-  alike; the game is looked for in "game" there, as run-test.ps1 does.
+  alike; HOTD2 PAL is looked for in "game" there, as run-test.ps1 does.
 #>
 param(
+	[ValidateSet('pal', 'us', 'mok')][string]$Game = 'pal',
+	[string]$GamePath = '',
+	[switch]$Quest,
 	[int]$Seconds = 150,
 	[int]$Delay = 0,
-	[string]$Dump = '',		# frames to dump state + RAM of, e.g. '2,3860' (HOTD2VR_SYNCDUMP)
-	[double[]]$Shots = @(30, 50, 65, 80, 95, 110, 125, 140)
+	[int]$NetDelay = 0,
+	[int]$Loss = 0,
+	[int]$Oop = 0,
+	[string]$Dump = '',
+	[switch]$Pages,
+	[switch]$OwnSaves,
+	[switch]$RollbackCheck,	# compare the RAM after every rollback with a full copy (HOTD2VR_ROLLBACKCHECK)
+	[string]$Region = '',	# 'offset,size,fromFrame,toFrame': that part of RAM every frame (sync.txt.region)
+	[double[]]$Shots = @()
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $data = if ($env:HOTD2VR_DATA) { $env:HOTD2VR_DATA } else { Split-Path -Parent $repo }
 $build = Join-Path $repo 'build-win'
-$cue = Get-ChildItem (Join-Path $data 'game') -Include *.cue, *.gdi, *.chd -Recurse | Select-Object -First 1
-if (-not $cue) { throw "No game found in $(Join-Path $data 'game')" }
+if (-not $GamePath) {
+	$GamePath = switch ($Game) {
+		'pal' { (Get-ChildItem (Join-Path $data 'game') -Include *.cue, *.gdi, *.chd -Recurse | Select-Object -First 1).FullName }
+		'us'  { (Get-ChildItem (Join-Path $data 'game-us') -Include *.cue, *.gdi, *.chd -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+		'mok' { Join-Path $data 'naomi\mok.zip' }
+	}
+}
+if (-not $GamePath -or -not (Test-Path $GamePath)) { throw "No game for '$Game' (give -GamePath)" }
 $root = Join-Path $data 'run\netplay'
 $shotDir = Join-Path $data 'shots\netplay'
 New-Item -ItemType Directory -Force $root, $shotDir | Out-Null
 Get-ChildItem $shotDir -Filter *.png -ErrorAction SilentlyContinue | Remove-Item
+
+# The route through each game, in seconds after the start: P1's Starts through the menus,
+# B through HOTD2's story, when both start shooting, when P2 joins (three presses: on the
+# Dreamcast a press while playing pauses, the next goes on), and when to take shots.
+$route = switch ($Game) {
+	'mok' { @{ Starts = @(36, 62, 2); Bs = @(); Fire = 64; GuestFire = 76; Join = @(80, 84, 88); Shots = @(40, 60, 75, 90, 105, 120, 140) } }
+	default { @{ Starts = @(44, 58.5, 2); Bs = @(61, 63.5, 66, 68.5); Fire = 70; GuestFire = 82; Join = @(85, 89, 93); Shots = @(60, 75, 90, 105, 120, 140) } }
+}
+if (-not $Shots) { $Shots = $route.Shots | Where-Object { $_ -lt $Seconds } }
 
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
@@ -71,40 +108,48 @@ foreach ($peer in $peers) {
 	New-Item -ItemType Directory -Force (Join-Path $dir 'data') | Out-Null
 	Copy-Item (Join-Path $build 'flycast.exe') $dir
 	Get-ChildItem $build -Filter *.dll -ErrorAction SilentlyContinue | Copy-Item -Destination $dir
-	Get-ChildItem (Join-Path $build 'data') -File | Where-Object { $_.Name -match 'vmu_save|nvmem' } |
-		Copy-Item -Destination (Join-Path $dir 'data')
+	# the same memory card and flash for both, or (-OwnSaves) the host's from the PC's solo
+	# games and none for the guest: online the game must not care (a blank card and flash)
+	if (-not $OwnSaves -or $peer.Name -eq 'host') {
+		Get-ChildItem (Join-Path $build 'data') -File | Where-Object { $_.Name -match 'vmu_save|nvmem|eeprom' } |
+			Copy-Item -Destination (Join-Path $dir 'data')
+	}
 	$peer | Add-Member Dir $dir
 }
 
-# OpenGL + native depth (the reprojection's path), HOTD2 PAL camera, light guns in A and B
+# OpenGL + native depth (the reprojection's path; each game's profile finds its camera),
+# light guns in A and B (the Dreamcast; an arcade game has them on its I/O board)
 $base = 'config:pvr.rend=0,config:rend.NativeDepthInterpolation=yes,config:aica.Volume=0,log:LogToFile=yes' +
-	',config:vr.Reproject=yes,config:vr.ProjAddr=5006816,config:vr.ViewportAddr=5007112' +
-	',input:device1=7,input:device2=7,network:GGPO=yes,network:EnableUPnP=no' +
+	',config:vr.Reproject=yes,input:device1=7,input:device2=7,network:GGPO=yes,network:EnableUPnP=no' +
 	",network:GGPODelay=$Delay"
+if ($Quest) { $base += ',config:vr.FovScale=2,config:vr.WidenFov=yes' }
+# GGPO's own network emulation (udp_proto.cpp), both ways
+$netEnv = @{ GGPO_NETWORK_DELAY = $NetDelay; GGPO_PACKET_LOSS = $Loss; GGPO_OOP_PERCENT = $Oop }
+foreach ($k in $netEnv.Keys) { if ($netEnv[$k]) { Set-Item "Env:$k" $netEnv[$k] } }
 if ($Dump) { $env:HOTD2VR_SYNCDUMP = $Dump }
+if ($Pages) { $env:HOTD2VR_SYNCPAGES = '1' }
+if ($Region) { $env:HOTD2VR_SYNCREGION = $Region }
+if ($RollbackCheck) { $env:HOTD2VR_ROLLBACKCHECK = '1' }
 foreach ($peer in $peers) {
 	$env:HOTD2VR_SYNCLOG = Join-Path $peer.Dir 'sync.txt'
 	$cfg = "$base,config:vr.UdpPort=$($peer.Port),$($peer.Net)"
 	$peer | Add-Member Proc (Start-Process -FilePath (Join-Path $peer.Dir 'flycast.exe') `
-		-ArgumentList @('-config', $cfg, "`"$($cue.FullName)`"") -WorkingDirectory $peer.Dir -PassThru)
+		-ArgumentList @('-config', $cfg, "`"$GamePath`"") -WorkingDirectory $peer.Dir -PassThru)
 	Start-Sleep -Seconds 1
 }
-Remove-Item Env:HOTD2VR_SYNCLOG
-if ($Dump) { Remove-Item Env:HOTD2VR_SYNCDUMP }
+foreach ($k in @('HOTD2VR_SYNCLOG', 'HOTD2VR_SYNCDUMP', 'HOTD2VR_SYNCPAGES', 'HOTD2VR_SYNCREGION', 'HOTD2VR_ROLLBACKCHECK') + @($netEnv.Keys)) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
 
-# What each gun does at time t (s): Start through the menus (host), B through the story,
-# then shooting; the guest joins with Start. Buttons: 1 trigger, 2 reload, 4 Start, 128 B.
+# What each gun does at time t (s). Buttons: 1 trigger, 2 reload, 4 Start, 128 B.
 function Gun-State([string]$who, [double]$t) {
-	$pulse = { param($from, $to, $every) $t -ge $from -and $t -le $to -and (($t - $from) % $every) -lt 0.2 }
 	$x = 5000; $y = 5000; $b = 0
 	if ($who -eq 'host') {
-		if (& $pulse 44 58.5 2) { $b = 4 }
-		foreach ($at in 61, 63.5, 66, 68.5) { if ($t -ge $at -and $t -lt $at + 0.2) { $b = 128 } }
+		$from, $to, $every = $route.Starts
+		if ($t -ge $from -and $t -le $to -and (($t - $from) % $every) -lt 0.2) { $b = 4 }
+		foreach ($at in $route.Bs) { if ($t -ge $at -and $t -lt $at + 0.2) { $b = 128 } }
 	} else {
-		# join: three times, as a press while it already plays pauses (and the next goes on)
-		foreach ($at in 85, 89, 93) { if ($t -ge $at -and $t -lt $at + 0.2) { $b = 4 } }
+		foreach ($at in $route.Join) { if ($t -ge $at -and $t -lt $at + 0.2) { $b = 4 } }
 	}
-	$fireFrom = if ($who -eq 'host') { 70 } else { 82 }
+	$fireFrom = if ($who -eq 'host') { $route.Fire } else { $route.GuestFire }
 	if ($t -ge $fireFrom) {
 		$phase = if ($who -eq 'host') { 0 } else { 1.7 }
 		$x = [int](5000 + 3500 * [math]::Sin($t * 0.9 + $phase))
@@ -131,7 +176,6 @@ try {
 		if ($shotQueue.Count -gt 0 -and $t -ge $shotQueue.Peek()) {
 			$at = $shotQueue.Dequeue()
 			foreach ($peer in $peers) { Save-Shot $peer.Proc (Join-Path $shotDir ("{0}_{1:000}.png" -f $peer.Name, $at)) }
-			Write-Output ("shots at {0}s" -f $at)
 		}
 		Start-Sleep -Milliseconds 40
 	}
@@ -141,34 +185,61 @@ try {
 }
 Start-Sleep -Milliseconds 500
 
-# Compare: per frame the last line of each (a rollback saves a frame again)
+# Each side's log: per frame the last RAM hash (a rollback saves a frame again); rollbacks are
+# where the frame number goes back, their depth the frames simulated again.
 $logs = @{}
 foreach ($peer in $peers) {
-	$map = @{}
+	$ram = @{}
+	$lines = 0; $rollbacks = 0; $resim = 0; $deepest = 0; $prev = -1; $first = $null; $last = $null
 	$file = Join-Path $peer.Dir 'sync.txt'
 	if (Test-Path $file) {
 		foreach ($line in [IO.File]::ReadLines($file)) {
 			$f = $line.Split(' ')
-			if ($f.Count -eq 3) { $map[[int]$f[0]] = "$($f[1]) $($f[2])" }
+			if ($f.Count -lt 3) { continue }
+			$frame = [int]$f[0]
+			$lines++
+			if ($frame -le $prev) {
+				$rollbacks++
+				$depth = $prev - $frame + 1
+				$resim += $depth
+				if ($depth -gt $deepest) { $deepest = $depth }
+			}
+			$prev = $frame
+			# main RAM, and video + sound RAM when logged
+			$ram[$frame] = if ($f.Count -ge 5) { "$($f[2]) $($f[4])" } else { $f[2] }
+			if ($f.Count -ge 4) {
+				if ($null -eq $first) { $first = @($frame, [long]$f[3]) }
+				$last = @($frame, [long]$f[3])
+			}
 		}
 	}
-	$logs[$peer.Name] = $map
-	Write-Output ("{0}: {1} frames logged" -f $peer.Name, $map.Count)
+	$logs[$peer.Name] = $ram
+	$fps = if ($first -and $last -and $last[1] -gt $first[1]) { ($last[0] - $first[0]) * 1000.0 / ($last[1] - $first[1]) } else { 0 }
+	Write-Output ("{0}: {1} frames, {2:0.0} fps; {3} rollbacks ({4:0.0} per second), on average {5:0.0} frames deep, at most {6}; {7:0.0}% of frames simulated again" -f `
+		$peer.Name, $ram.Count, $fps, $rollbacks, ($rollbacks * 60.0 / [math]::Max(1, $ram.Count)),
+		($resim / [math]::Max(1, $rollbacks)), $deepest, (100.0 * $resim / [math]::Max(1, $ram.Count)))
 }
-# RAM decides (the rest of a rollback state holds a host pointer, different on each side)
-$common = $logs['host'].Keys | Where-Object { $logs['guest'].ContainsKey($_) } | Sort-Object
-$ramDiff = @($common | Where-Object { $logs['host'][$_].Split(' ')[1] -ne $logs['guest'][$_].Split(' ')[1] })
-Write-Output ("frames in both: {0}, RAM different: {1}" -f $common.Count, $ramDiff.Count)
+# The last frames were still predictions when the copies were closed (not yet corrected by
+# the other side's input): only frames GGPO can no longer roll back count.
+$confirmedUpTo = [math]::Min(($logs['host'].Keys | Measure-Object -Maximum).Maximum,
+	($logs['guest'].Keys | Measure-Object -Maximum).Maximum) - 10
+$common = $logs['host'].Keys | Where-Object { $_ -le $confirmedUpTo -and $logs['guest'].ContainsKey($_) } | Sort-Object
+$ramDiff = @($common | Where-Object { $logs['host'][$_] -ne $logs['guest'][$_] })
+Write-Output ("frames in both (confirmed): {0}, memory (main, video, sound RAM) different: {1}" -f $common.Count, $ramDiff.Count)
 if ($ramDiff.Count -gt 0) {
-	$first = $ramDiff[0]
-	Write-Output ("first frame with different RAM: {0} ({1:0.0} s)" -f $first, ($first / 60))
-} else {
+	$a = $logs['host'][$ramDiff[0]].Split(' '); $b = $logs['guest'][$ramDiff[0]].Split(' ')
+	$which = @(if ($a[0] -ne $b[0]) { 'main RAM' }; if ($a.Count -gt 1 -and $a[1] -ne $b[1]) { 'video/sound RAM' }) -join ' + '
+	Write-Output ("first frame with different memory: {0} ({1:0.0} s), {2}" -f $ramDiff[0], ($ramDiff[0] / 60), $which)
+} elseif ($common.Count -gt 0) {
 	Write-Output 'the same game on both sides, every frame'
 }
 foreach ($peer in $peers) {
 	$log = Join-Path $peer.Dir 'flycast.log'
 	if (Test-Path $log) {
-		Write-Output "--- $($peer.Name) log (network):"
-		Select-String -Path $log -Pattern 'GGPO|NETWORK|desync|light gun' | Select-Object -Last 8 | ForEach-Object { $_.Line }
+		$bad = @(Select-String -Path $log -Pattern 'Rollback check').Count
+		if ($RollbackCheck) { "$($peer.Name): rollback check, $bad problem lines" }
+		Select-String -Path $log -Pattern 'GGPO|stopped|Exception|disconnect|Rollback check' |
+			Where-Object { $_.Line -notmatch 'GGPO verif' } | Select-Object -Last 4 |
+			ForEach-Object { "$($peer.Name) log: " + ($_.Line -replace '^\S+ \S+ ', '') }
 	}
 }

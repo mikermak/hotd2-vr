@@ -106,8 +106,16 @@ void recompile() {
 }
 #endif
 
+// What the compiled program was made from (hotd2-vr): a netplay rollback marks the program
+// dirty every time (it may have changed in the frames rolled back), but it almost never has,
+// and compiling it again on every rollback is costly on a headset.
+static u32 compiledMpro[128 * 4];
+static u32 compiledRBL, compiledRBP;
+static bool compiledValid;
+
 void init()
 {
+	compiledValid = false;
 	memset(&state, 0, sizeof(state));
 	state.RBL = 0x8000 - 1;
 	state.RBP = 0;
@@ -125,6 +133,7 @@ void writeProg(u32 addr)
 
 void term()
 {
+	compiledValid = false;
 	state.stopped = true;
 	recTerm();
 }
@@ -141,8 +150,15 @@ void step()
 				state.stopped = false;
 				break;
 			}
-		if (!state.stopped)
+		if (!state.stopped && !(compiledValid && state.RBL == compiledRBL && state.RBP == compiledRBP
+				&& memcmp(compiledMpro, DSPData->MPRO, sizeof(compiledMpro)) == 0))
+		{
 			recompile();
+			memcpy(compiledMpro, DSPData->MPRO, sizeof(compiledMpro));
+			compiledRBL = state.RBL;
+			compiledRBP = state.RBP;
+			compiledValid = true;
+		}
 	}
 	if (state.stopped)
 		return;

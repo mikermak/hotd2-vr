@@ -9,6 +9,7 @@
 #include "oslib/storage.h"
 #include "oslib/i18n.h"
 #include "hw/aica/sgc_if.h"
+#include "hw/aica/aica_if.h"
 #include "cfg/option.h"
 #include "input/maplelink.h"
 #include <zlib.h>
@@ -437,6 +438,20 @@ struct maple_sega_vmu: maple_base
 		memset(flash_data, 0, sizeof(flash_data));
 		memset(lcd_data, 0, sizeof(lcd_data));
 
+		// hotd2-vr: online (GGPO) both sides must have the same card, and each player's own
+		// holds their own saves (two headsets never matched): a blank one in memory, never
+		// written to the player's file
+		if (config::GGPOEnable)
+		{
+			if (file != nullptr)
+				std::fclose(file);
+			file = nullptr;
+			initializeVmu();		// (its fullSave does nothing without a file)
+			fullSaveNeeded = false;
+			INFO_LOG(MAPLE, "VMU %s: online, a blank card in memory", logical_port);
+			return;
+		}
+
         // Load existing vmu file if found
         std::string rpath = hostfs::getVmuPath(logical_port, false);
         // this might be a storage url
@@ -646,8 +661,21 @@ struct maple_sega_vmu: maple_base
 						w32(MFID_3_Clock);
 
 						time_t now;
-						time(&now);
-						tm* timenow=localtime(&now);
+						tm* timenow;
+						if (config::GGPOEnable)
+						{
+							// hotd2-vr: online, the emulated clock (fixed at the start, ticking
+							// with the game, the same on both sides and after a rollback): the
+							// computer's own clock made HOTD2 create its save a second apart on
+							// the two sides, now and then (and again on a re-simulated frame)
+							now = (time_t)aica::GetRTC() - (20 * 365 + 5) * 24 * 60 * 60;
+							timenow = gmtime(&now);
+						}
+						else
+						{
+							time(&now);
+							timenow = localtime(&now);
+						}
 
 						u8* timebuf=dma_buffer_out;
 
@@ -662,6 +690,10 @@ struct maple_sega_vmu: maple_base
 						w8(timenow->tm_sec);
 						w8(0);
 
+						// (hotd2-vr: logged, it's rare and the one host value a save takes)
+						NOTICE_LOG(MAPLE, "VMU %s: clock read %04d/%02d/%02d %02d:%02d:%02d (%s)", logical_port,
+								timebuf[0] + timebuf[1] * 256, timebuf[2], timebuf[3], timebuf[4], timebuf[5], timebuf[6],
+								config::GGPOEnable ? "emulated, online" : "this computer's");
 						DEBUG_LOG(MAPLE, "VMU: CLOCK Read-> datetime is %04d/%02d/%02d ~ %02d:%02d:%02d!",
 								timebuf[0] + timebuf[1] * 256,
 								timebuf[2],

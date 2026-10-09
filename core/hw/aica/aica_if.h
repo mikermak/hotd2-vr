@@ -7,6 +7,8 @@ namespace aica
 
 extern RamRegion aica_ram;
 u32 GetRTC_now();
+// The emulated real-time clock now (seconds since 1/1/1950), as the game reads it
+u32 GetRTC();
 template<typename T> T readRtcReg(u32 addr);
 template<typename T> void writeRtcReg(u32 addr, T data);
 template<typename T> T readAicaReg(u32 addr);

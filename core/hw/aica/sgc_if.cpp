@@ -1692,7 +1692,10 @@ void deserialize(Deserializer& deser)
 
 		deser >> channel.AEG.val;
 		deser >> channel.AEG.state;
-		channel.SetAegState(channel.AEG.state);
+		// (only the step function, hotd2-vr: SetAegState also clears KYONB in release, which
+		// undid a key-on the driver had set but not yet started when the state was saved;
+		// after a netplay rollback that voice never started on the side that rolled back)
+		channel.StepAEG = ChannelEx::AEG_STEP_LUT[channel.AEG.state];
 		channel.UpdateAEG();
 		deser >> channel.FEG.value;
 		deser >> channel.FEG.state;
@@ -1707,7 +1710,8 @@ void deserialize(Deserializer& deser)
 			channel.FEG.prev1 = 0;
 			channel.FEG.prev2 = 0;
 		}
-		channel.SetFegState(channel.FEG.state);
+		// (and SetFegState reset the filter of a voice in attack right after it was loaded)
+		channel.StepFEG = ChannelEx::FEG_STEP_LUT[channel.FEG.state];
 		channel.UpdateFEG();
 		channel.UpdateStreamStep();
 

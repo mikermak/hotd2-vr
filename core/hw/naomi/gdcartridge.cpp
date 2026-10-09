@@ -648,6 +648,7 @@ void GDCartridge::loadSegments(u32 offset, u32 size)
 void GDCartridge::device_reset()
 {
 	dimm_cur_address = 0;
+	dimm_command = dimm_offsetl = dimm_parameterl = dimm_parameterh = 0xffff;
 }
 void *GDCartridge::GetDmaPtr(u32 &size)
 {

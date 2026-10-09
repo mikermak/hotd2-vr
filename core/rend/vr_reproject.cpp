@@ -136,7 +136,9 @@ static void widenGameView(Event event, void *)
 		}
 		return;
 	}
-	if (config::VrViewportAddr <= 0 || widensByCode())
+	// (not online: the "what we last wrote" below lives outside netplay's rollback state, so
+	// after a rollback one side would scale the restored matrix a second time)
+	if (config::VrViewportAddr <= 0 || widensByCode() || config::GGPOEnable)
 		return;
 	const u32 addr = config::VrViewportAddr;
 	const glm::vec2 cur(readFloat(addr + ScaleX), readFloat(addr + ScaleY));
@@ -365,6 +367,11 @@ static void applyGameProfile(Event, void *)
 	std::fill(std::begin(markerTextures), std::end(markerTextures), 0u);
 	std::fill(std::begin(p2PromptTextures), std::end(p2PromptTextures), 0u);
 	activeProfile = nullptr;
+	// Online (GGPO), what the VR mod writes into a game it has a profile for must be the
+	// same on both sides, whatever each player's settings or machine (a Quest, PCVR, a PC
+	// without a headset): the profile's view widening as on the headset, and light guns in
+	// ports A and B (B is the other player's). netplayDigest() lets the two sides check it.
+	const bool netplay = config::GGPOEnable;
 	if (xr::enabled())
 	{
 		// Everything the headset view depends on.
@@ -384,7 +391,14 @@ static void applyGameProfile(Event, void *)
 			config::VrFocal.override(prof.focal);
 		if (prof.hudW > 0.f && config::VrHudW == 1.f)	// (unless the player set one)
 			config::VrHudW.override(prof.hudW);
-		if (xr::enabled() && config::VrWiden && config::VrFovScale <= 1.f)
+		if (netplay)
+		{
+			config::VrReproject.override(true);
+			config::NativeDepthInterpolation.override(true);
+			config::VrFovScale.override(prof.fovScale);
+			config::VrWidenFov.override(true);
+		}
+		else if (xr::enabled() && config::VrWiden && config::VrFovScale <= 1.f)
 			config::VrFovScale.override(prof.fovScale);
 		if (config::VrWidenFov)
 		{
@@ -393,20 +407,21 @@ static void applyGameProfile(Event, void *)
 		}
 		std::copy(std::begin(prof.markerTextures), std::end(prof.markerTextures), std::begin(markerTextures));
 		std::copy(std::begin(prof.p2PromptTextures), std::end(prof.p2PromptTextures), std::begin(p2PromptTextures));
-		const bool gunB = config::VrDualWield;
-		if (xr::enabled() && config::VrXrGun && settings.platform.isConsole()
+		const bool gunB = config::VrDualWield || netplay;
+		if (((xr::enabled() && config::VrXrGun) || netplay) && settings.platform.isConsole()
 				&& (config::MapleMainDevices[0] != MDT_LightGun || (gunB && config::MapleMainDevices[1] != MDT_LightGun)))
 		{
 			// The right controller is a light gun: plug one into port A (a pad ignores
-			// where it points), and player 2's into port B for dual wielding (vr.DualWield).
-			// The devices were made just before this event, before the game runs, so they
-			// can still be swapped. (An arcade game's guns are on its I/O board already.)
+			// where it points), and player 2's into port B for dual wielding (vr.DualWield)
+			// or the other player online. The devices were made just before this event,
+			// before the game runs, so they can still be swapped. (An arcade game's guns are
+			// on its I/O board already.)
 			config::MapleMainDevices[0].override(MDT_LightGun);
 			if (gunB)
 				config::MapleMainDevices[1].override(MDT_LightGun);
 			mcfg_DestroyDevices();
 			mcfg_CreateDevices();
-			NOTICE_LOG(RENDERER, "VR: light gun in port A%s", config::VrDualWield ? " and B" : "");
+			NOTICE_LOG(RENDERER, "VR: light gun in port A%s", gunB ? " and B" : "");
 		}
 		NOTICE_LOG(RENDERER, "VR: camera profile for %s", prof.gameId);
 	}
@@ -462,6 +477,29 @@ static void applyProfileWrites(Event, void *)
 	for (const Poke& poke : prof->pokes)
 		if (poke.offset != 0 && ReadMem16_nommu(0x8C000000u + poke.offset) != poke.value)
 			WriteMem16_nommu(0x8C000000u + poke.offset, poke.value);
+}
+
+void netplayDigest(MD5Sum& md5)
+{
+	// everything widenGameView and applyProfileWrites may write, as they'd decide it
+	const GameProfile *prof = activeProfile;
+	const bool on = config::VrReproject && config::VrFovScale > 1.f;
+	const char *id = prof != nullptr ? prof->gameId : "";
+	md5.add(id, (unsigned long)strlen(id));		// (the text, not a pointer: add(const T&) hashes the object)
+	md5.add((u8)config::VrReproject);
+	if (on && fovLiterals[0] != 0)
+	{
+		md5.add(fovLiterals).add(fovStock);
+		md5.add(widenedAngle(fovStock, config::VrFovScale));
+	}
+	if (prof != nullptr && config::VrReproject)
+	{
+		if (on && widensByCode())
+			for (const CodePatch& c : prof->fovPatch)
+				md5.add(c.offset).add(c.stock).add(c.patched);
+		for (const Poke& poke : prof->pokes)
+			md5.add(poke.offset).add(poke.value);
+	}
 }
 
 static struct ProfileWritesRegistration
@@ -713,7 +751,8 @@ static void hidePlayer2Prompt(rend_context& ctx, const RenderPass& pass, const R
 {
 	if (p2PromptTextures[0] == 0)
 		return;
-	const bool hide = config::VrHideP2Prompt;
+	// (not online: player 2 is a real player there, and on the guest it's the player's own)
+	const bool hide = config::VrHideP2Prompt && !config::GGPOEnable;
 	struct Box { float x0, y0, x1, y1; };
 	auto flat = [&](const PolyParam& pp, Box& b) {
 		if (pp.count < 3 || pp.first + pp.count > ctx.verts.size())

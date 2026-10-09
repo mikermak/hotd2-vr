@@ -64,6 +64,8 @@ UdpProtocol::UdpProtocol() :
 
    _send_latency = GGPOPlatform::GetConfigInt("GGPO_NETWORK_DELAY");
    _oop_percent = GGPOPlatform::GetConfigInt("GGPO_OOP_PERCENT");
+   // hotd2-vr: lost packets too, for testing netplay on a bad connection
+   _loss_percent = GGPOPlatform::GetConfigInt("GGPO_PACKET_LOSS");
 }
 
 UdpProtocol::~UdpProtocol()
@@ -775,6 +777,9 @@ UdpProtocol::PumpSendQueue()
          _oo_packet.send_time = GGPOPlatform::GetCurrentTimeMS() + delay;
          _oo_packet.msg = entry.msg;
          _oo_packet.dest_addr = entry.dest_addr;
+      } else if (_loss_percent && (rand() % 100) < _loss_percent) {
+         Log("udpproto%d | dropping packet (seq: %d)", _queue, entry.msg->hdr.sequence_number);
+         delete entry.msg;
       } else {
          ASSERT(entry.dest_addr.sin_addr.s_addr);
 

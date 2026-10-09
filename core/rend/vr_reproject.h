@@ -19,6 +19,7 @@
 
 struct rend_context;
 struct RenderPass;
+class MD5Sum;
 
 namespace vr
 {
@@ -41,6 +42,9 @@ struct ReprojectParams
 // then draws and culls with the wide view. (Its light gun hit test still uses the stock
 // view: see aimAtScene in vr/xr_host.cpp.)
 bool widensGameFov();
+// Online (GGPO): hashes what the VR mod writes into the game's memory (the profile, the
+// widened field of view, code patches and pokes), for the two sides to check they match.
+void netplayDigest(MD5Sum& md5);
 
 // The comfort zone's parameters for the headset (vr.WorldScale, vr.ComfortStart,
 // vr.ComfortMin), or zero when it is switched off.
