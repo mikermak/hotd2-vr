@@ -41,6 +41,12 @@ namespace vr::xr
 namespace
 {
 
+void logGlErrors()
+{
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+		ERROR_LOG(RENDERER, "VR hands OpenGL error 0x%04x", error);
+}
+
 enum { MeshFrame, MeshSlide, MeshGunHand, MeshOpenHand, MeshCount };
 
 struct Texture
@@ -67,7 +73,7 @@ struct Model
 Model model;
 bool tried, loaded;
 
-GLuint program, vbo;
+GLuint program, vbo, vao;
 GLint uMvp = -1, uModel = -1, uEye = -1, uSpecular = -1, uShininess = -1, uAlphaTest = -1, uLight = -1, uTex = -1;
 
 bool load()
@@ -243,10 +249,20 @@ void main()
 	uLight = glGetUniformLocation(program, "muzzleLight");
 	uTex = glGetUniformLocation(program, "tex");
 
-	GlVertexArray::unbind();
+	vao = createVertexArray();
+	bindVertexArray(vao);
 	glGenBuffers(1, &vbo);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo);
 	glBufferData(GL_ARRAY_BUFFER, model.vertices.size(), model.vertices.data(), GL_STATIC_DRAW);
+	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, VertexSize, (const void *)0);
+	glVertexAttribPointer(VERTEX_NORM_ARRAY, 3, GL_FLOAT, GL_FALSE, VertexSize, (const void *)12);
+	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, VertexSize, (const void *)24);
+	glVertexAttribPointer(VERTEX_COL_BASE_ARRAY, 4, GL_UNSIGNED_BYTE, GL_TRUE, VertexSize, (const void *)32);
+	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
+	glEnableVertexAttribArray(VERTEX_NORM_ARRAY);
+	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
+	glEnableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
+	bindVertexArray(0);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glActiveTexture(GL_TEXTURE0);
 	for (Texture& t : model.textures)
@@ -307,15 +323,7 @@ void drawHands(const glm::mat4& viewProj, const glm::vec3& eyePos, const HandsVi
 	glUniform4f(uLight, view.muzzleLight.x, view.muzzleLight.y, view.muzzleLight.z, view.muzzleLight.w);
 	glUniform1i(uTex, 0);
 	glActiveTexture(GL_TEXTURE0);
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, VertexSize, (const void *)0);
-	glVertexAttribPointer(VERTEX_NORM_ARRAY, 3, GL_FLOAT, GL_FALSE, VertexSize, (const void *)12);
-	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, VertexSize, (const void *)24);
-	glVertexAttribPointer(VERTEX_COL_BASE_ARRAY, 4, GL_UNSIGNED_BYTE, GL_TRUE, VertexSize, (const void *)32);
-	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
-	glEnableVertexAttribArray(VERTEX_NORM_ARRAY);
-	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
-	glEnableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
+	bindVertexArray(vao);
 
 	// metal with a sheen, skin and cotton matt
 	drawMesh(MeshFrame, viewProj, view.gunPose, 0.35f, 40.f);
@@ -331,12 +339,9 @@ void drawHands(const glm::mat4& viewProj, const glm::vec3& eyePos, const HandsVi
 	if (view.otherHand)
 		drawMesh(MeshOpenHand, viewProj, view.handPose * gloves, 0.06f, 10.f);
 
-	glDisableVertexAttribArray(VERTEX_POS_ARRAY);
-	glDisableVertexAttribArray(VERTEX_NORM_ARRAY);
-	glDisableVertexAttribArray(VERTEX_UV_ARRAY);
-	glDisableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	bindVertexArray(0);
 	glcache.BindTexture(GL_TEXTURE_2D, 0);
+	logGlErrors();
 }
 
 void termHands()
@@ -345,13 +350,14 @@ void termHands()
 		glcache.DeleteProgram(program);
 	if (vbo != 0)
 		glDeleteBuffers(1, &vbo);
+	deleteVertexArray(vao);
 	for (Texture& t : model.textures)
 		if (t.id != 0)
 		{
 			glcache.DeleteTextures(1, &t.id);
 			t.id = 0;
 		}
-	program = vbo = 0;
+	program = vbo = vao = 0;
 	uMvp = uModel = uEye = uSpecular = uShininess = uAlphaTest = uLight = uTex = -1;
 }
 

@@ -109,6 +109,10 @@ bool SDLGLGraphicsContext::init()
 		ERROR_LOG(RENDERER, "gladLoadGL failed or GL 3.0 not supported");
 		return false;
 	}
+	int profile = 0;
+	SDL_GL_GetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, &profile);
+	INFO_LOG(RENDERER, "OpenGL context profile: %s (0x%x)",
+			profile & SDL_GL_CONTEXT_PROFILE_CORE ? "Core" : profile & SDL_GL_CONTEXT_PROFILE_COMPATIBILITY ? "Compatibility" : "unknown", profile);
 #endif
 	postInit();
 	

@@ -40,9 +40,16 @@ stbtt_fontinfo font;
 bool fontTried, fontLoaded;
 
 GLuint program, texture;
+GLuint quadVao, quadVbo;
 GLint uMvp = -1;
 std::vector<u8> pixels;
 std::string shown;			// what the picture says now
+
+void logGlErrors()
+{
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+		ERROR_LOG(RENDERER, "VR panel OpenGL error 0x%04x", error);
+}
 
 bool loadFont()
 {
@@ -186,6 +193,17 @@ void main()
 	glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glcache.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glcache.BindTexture(GL_TEXTURE_2D, 0);
+	quadVao = createVertexArray();
+	bindVertexArray(quadVao);
+	glGenBuffers(1, &quadVbo);
+	glBindBuffer(GL_ARRAY_BUFFER, quadVbo);
+	glBufferData(GL_ARRAY_BUFFER, 20 * sizeof(float), nullptr, GL_STREAM_DRAW);
+	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (const void *)0);
+	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (const void *)(3 * sizeof(float)));
+	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
+	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
+	bindVertexArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	shown.clear();
 	return true;
 }
@@ -216,6 +234,8 @@ void drawPanel(const glm::mat4& viewProj, const Panel& panel)
 		-hx, -hy, -Distance,  0.f, 1.f,
 		 hx, -hy, -Distance,  1.f, 1.f,
 	};
+	glBindBuffer(GL_ARRAY_BUFFER, quadVbo);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
 	glcache.UseProgram(program);
 	glUniformMatrix4fv(uMvp, 1, GL_FALSE, &viewProj[0][0]);
 	glcache.Disable(GL_SCISSOR_TEST);
@@ -224,17 +244,12 @@ void drawPanel(const glm::mat4& viewProj, const Panel& panel)
 	glcache.Disable(GL_CULL_FACE);
 	glcache.Enable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	GlVertexArray::unbind();
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), quad);
-	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), quad + 3);
-	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
-	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
+	bindVertexArray(quadVao);
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-	glDisableVertexAttribArray(VERTEX_POS_ARRAY);
-	glDisableVertexAttribArray(VERTEX_UV_ARRAY);
+	bindVertexArray(0);
 	glcache.Disable(GL_BLEND);
 	glcache.BindTexture(GL_TEXTURE_2D, 0);
+	logGlErrors();
 }
 
 void termPanel()
@@ -243,7 +258,10 @@ void termPanel()
 		glcache.DeleteProgram(program);
 	if (texture != 0)
 		glcache.DeleteTextures(1, &texture);
+	if (quadVbo != 0) glDeleteBuffers(1, &quadVbo);
+	deleteVertexArray(quadVao);
 	program = texture = 0;
+	quadVao = quadVbo = 0;
 	uMvp = -1;
 	shown.clear();
 }
