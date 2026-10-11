@@ -1121,6 +1121,13 @@ static bool vrShowFramebuffer;
 static bool vrFramebufferBlank;
 static GLuint vrScreenProgram;
 static GLint vrScreenMvp = -1;
+static GLuint vrScreenVao, vrScreenVbo;
+
+static void logVrScreenGlErrors()
+{
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+		ERROR_LOG(RENDERER, "VR screen OpenGL error 0x%04x", error);
+}
 // What was rendered last, kept until the game puts it on screen (Present). Games also
 // render frames they never show.
 enum class VrPending { None, Frame, Framebuffer };
@@ -1434,6 +1441,9 @@ void OpenGLRenderer::Term()
 		vrScreenProgram = 0;
 		vrScreenMvp = -1;
 	}
+	if (vrScreenVbo != 0) glDeleteBuffers(1, &vrScreenVbo);
+	deleteVertexArray(vrScreenVao);
+	vrScreenVbo = vrScreenVao = 0;
 	TexCache.Clear();
 	gles_term();
 }
@@ -1514,6 +1524,20 @@ void main()
 		glcache.UseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "tex"), 0);
 	}
+	if (vrScreenVbo == 0)
+	{
+		vrScreenVao = createVertexArray();
+		bindVertexArray(vrScreenVao);
+		glGenBuffers(1, &vrScreenVbo);
+		glBindBuffer(GL_ARRAY_BUFFER, vrScreenVbo);
+		glBufferData(GL_ARRAY_BUFFER, 20 * sizeof(float), nullptr, GL_STREAM_DRAW);
+		glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (const void *)0);
+		glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (const void *)(3 * sizeof(float)));
+		glEnableVertexAttribArray(VERTEX_POS_ARRAY);
+		glEnableVertexAttribArray(VERTEX_UV_ARRAY);
+		bindVertexArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+	}
 	const float d = config::VrHudDepth;
 	const float tx = 320.f / config::VrFocal * d, ty = 240.f / config::VrFocal * d;
 	// game eye space, renderer convention (y down): top of the image has negative y
@@ -1523,6 +1547,8 @@ void main()
 		-tx,  ty, -d,  0.f, 1.f,
 		 tx,  ty, -d,  1.f, 1.f,
 	};
+	glBindBuffer(GL_ARRAY_BUFFER, vrScreenVbo);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
 	glcache.UseProgram(program);
 	glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, &eye.viewProj[0][0]);
 	glcache.Disable(GL_DEPTH_TEST);
@@ -1530,15 +1556,10 @@ void main()
 	glcache.Disable(GL_BLEND);
 	glActiveTexture(GL_TEXTURE0);
 	glcache.BindTexture(GL_TEXTURE_2D, gl.dcfb.tex);
-	GlVertexArray::unbind();
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), quad);
-	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), quad + 3);
-	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
-	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
+	bindVertexArray(vrScreenVao);
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-	glDisableVertexAttribArray(VERTEX_POS_ARRAY);
-	glDisableVertexAttribArray(VERTEX_UV_ARRAY);
+	bindVertexArray(0);
+	logVrScreenGlErrors();
 }
 
 const rend_context *gles_vr_frame() {

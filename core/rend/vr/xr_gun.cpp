@@ -15,10 +15,12 @@
 #include "rend/gles/gles.h"
 #include "rend/gles/glcache.h"
 #include "cfg/option.h"
+#include "log/Log.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -26,6 +28,12 @@ namespace vr::xr
 {
 namespace
 {
+
+void logGlErrors(const char *pass)
+{
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+		ERROR_LOG(RENDERER, "VR %s OpenGL error 0x%04x", pass, error);
+}
 
 static_assert(GunMuzzle.x == gunmodel::Muzzle[0] && GunMuzzle.y == gunmodel::Muzzle[1] && GunMuzzle.z == gunmodel::Muzzle[2],
 		"GunMuzzle (xr_gun.h) must match the baked model");
@@ -47,7 +55,8 @@ const PartMaterial Materials[] = {
 };
 
 // The model, on the GPU
-GLuint modelVbo, modelIbo;
+GLuint modelVbo, modelIbo, modelVao;
+GLuint glowVbo, glowVao;
 GLuint modelProgram;
 GLint mMvp = -1, mModel = -1, mEye = -1, mColor = -1, mSpecular = -1, mShininess = -1, mEmissive = -1, mLight = -1;
 
@@ -162,15 +171,20 @@ void main()
 			verts[i * 6 + 3 + k] = gunmodel::Normals[i * 3 + k] / 127.f;
 		}
 	}
-	GlVertexArray::unbind();
+	modelVao = createVertexArray();
+	bindVertexArray(modelVao);
 	glGenBuffers(1, &modelVbo);
 	glBindBuffer(GL_ARRAY_BUFFER, modelVbo);
 	glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_STATIC_DRAW);
 	glGenBuffers(1, &modelIbo);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modelIbo);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(gunmodel::Indices), gunmodel::Indices, GL_STATIC_DRAW);
+	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (const void *)0);
+	glVertexAttribPointer(VERTEX_NORM_ARRAY, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (const void *)(3 * sizeof(float)));
+	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
+	glEnableVertexAttribArray(VERTEX_NORM_ARRAY);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	bindVertexArray(0);
 	return true;
 }
 
@@ -229,6 +243,17 @@ void main()
 	gMvp = glGetUniformLocation(glowProgram, "mvp");
 	gShape = glGetUniformLocation(glowProgram, "shape");
 	gStarAngle = glGetUniformLocation(glowProgram, "starAngle");
+	glowVao = createVertexArray();
+	bindVertexArray(glowVao);
+	glGenBuffers(1, &glowVbo);
+	glBindBuffer(GL_ARRAY_BUFFER, glowVbo);
+	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, sizeof(GlowVertex), (const void *)offsetof(GlowVertex, pos));
+	glVertexAttribPointer(VERTEX_COL_BASE_ARRAY, 4, GL_FLOAT, GL_FALSE, sizeof(GlowVertex), (const void *)offsetof(GlowVertex, color));
+	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, sizeof(GlowVertex), (const void *)offsetof(GlowVertex, corner));
+	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
+	glEnableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
+	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
+	bindVertexArray(0);
 	return true;
 }
 
@@ -240,10 +265,7 @@ void drawModel(const glm::mat4& viewProj, const glm::vec3& eyePos, const glm::ma
 	glUniformMatrix4fv(mModel, 1, GL_FALSE, &pose[0][0]);
 	glUniform3f(mEye, eyePos.x, eyePos.y, eyePos.z);
 	glUniform4f(mLight, muzzleLight.x, muzzleLight.y, muzzleLight.z, muzzleLight.w);
-	glBindBuffer(GL_ARRAY_BUFFER, modelVbo);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, modelIbo);
-	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (const void *)0);
-	glVertexAttribPointer(VERTEX_NORM_ARRAY, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (const void *)(3 * sizeof(float)));
+	bindVertexArray(modelVao);
 	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
 	glEnableVertexAttribArray(VERTEX_NORM_ARRAY);
 	for (const gunmodel::Part& part : gunmodel::Parts)
@@ -258,21 +280,18 @@ void drawModel(const glm::mat4& viewProj, const glm::vec3& eyePos, const glm::ma
 		glUniform3f(mEmissive, m->emissive.r, m->emissive.g, m->emissive.b);
 		glDrawElements(GL_TRIANGLES, (GLsizei)part.count, GL_UNSIGNED_SHORT, (const void *)(part.first * sizeof(unsigned short)));
 	}
-	glDisableVertexAttribArray(VERTEX_POS_ARRAY);
-	glDisableVertexAttribArray(VERTEX_NORM_ARRAY);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	bindVertexArray(0);
 }
 
 void drawGlow(const std::vector<GlowVertex>& verts)
 {
 	if (verts.empty())
 		return;
-	const GlowVertex *v = verts.data();
-	glVertexAttribPointer(VERTEX_POS_ARRAY, 3, GL_FLOAT, GL_FALSE, sizeof(GlowVertex), &v->pos);
-	glVertexAttribPointer(VERTEX_COL_BASE_ARRAY, 4, GL_FLOAT, GL_FALSE, sizeof(GlowVertex), &v->color);
-	glVertexAttribPointer(VERTEX_UV_ARRAY, 2, GL_FLOAT, GL_FALSE, sizeof(GlowVertex), &v->corner);
+	bindVertexArray(glowVao);
+	glBindBuffer(GL_ARRAY_BUFFER, glowVbo);
+	glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(GlowVertex), verts.data(), GL_STREAM_DRAW);
 	glDrawArrays(GL_TRIANGLES, 0, (GLsizei)verts.size());
+	bindVertexArray(0);
 }
 
 // A quad facing the eye, around a point in room space.
@@ -385,6 +404,7 @@ void drawGunModel(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunV
 	}
 	else
 		drawModel(viewProj, eyePos, gun.pose, muzzleLight);
+	logGlErrors("gun");
 }
 
 void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunView& gun, bool withSmoke)
@@ -484,10 +504,6 @@ void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunVi
 	glcache.UseProgram(glowProgram);
 	glUniformMatrix4fv(gMvp, 1, GL_FALSE, &viewProj[0][0]);
 	glUniform1f(gStarAngle, 6.2831853f * shotRandom(gun.shot, 3));
-	GlVertexArray::unbind();
-	glEnableVertexAttribArray(VERTEX_POS_ARRAY);
-	glEnableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
-	glEnableVertexAttribArray(VERTEX_UV_ARRAY);
 	glcache.Enable(GL_BLEND);
 	// smoke and the line against the guns' depth (the guns' models are all drawn by now)
 	glcache.Enable(GL_DEPTH_TEST);
@@ -504,11 +520,9 @@ void drawGunGlow(const glm::mat4& viewProj, const glm::vec3& eyePos, const GunVi
 	drawGlowShape(Flame, flames);
 	drawGlowShape(Star, stars);
 	drawGlowShape(Dot, dots);
-	glDisableVertexAttribArray(VERTEX_POS_ARRAY);
-	glDisableVertexAttribArray(VERTEX_COL_BASE_ARRAY);
-	glDisableVertexAttribArray(VERTEX_UV_ARRAY);
 	glcache.DepthMask(GL_TRUE);
 	glcache.Disable(GL_BLEND);
+	logGlErrors("gun glow");
 }
 
 void termGun()
@@ -521,8 +535,12 @@ void termGun()
 		glDeleteBuffers(1, &modelVbo);
 	if (modelIbo != 0)
 		glDeleteBuffers(1, &modelIbo);
+	deleteVertexArray(modelVao);
+	if (glowVbo != 0) glDeleteBuffers(1, &glowVbo);
+	deleteVertexArray(glowVao);
 	modelProgram = glowProgram = 0;
 	modelVbo = modelIbo = 0;
+	modelVao = glowVao = glowVbo = 0;
 	mMvp = mModel = mEye = mColor = mSpecular = mShininess = mEmissive = mLight = -1;
 	gMvp = gShape = gStarAngle = -1;
 	smoke.clear();
