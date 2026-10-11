@@ -2,7 +2,7 @@ name: Windows PCVR
 
 on:
   push:
-    branches: [hotd2-vr]
+    branches: [hotd2-vr, 'codex/**']
   pull_request:
     branches: [hotd2-vr]
   workflow_dispatch:
