@@ -12,6 +12,8 @@ public final class JNIdc
 	public static native String initEnvironment(Emulator emulator, String filesDirectory, String homeDirectory, String locale);
 	public static native void setExternalStorageDirectories(Object[] pathList);
 	public static native void setGameUri(String fileName);
+	// hotd2-vr: transient settings for this run, "section:key=value,..." (a test aid)
+	public static native void setConfigOverrides(String spec);
 	public static native void pause();
 	public static native void resume();
 	public static native void stop();

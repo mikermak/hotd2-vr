@@ -135,6 +135,7 @@ static bool keyboardGame;
 static bool mouseGame;
 static int inputSize;
 static FILE *syncLog;		// HOTD2VR_SYNCLOG (save_game_state)
+static struct { int frames, saves, rollbacks; } netStats;	// nextFrame's 5 s log
 static struct { s16 x, y; } heldAim;	// the local light gun's position as last sent (nextFrame)
 static void (*chatCallback)(int playerNum, const std::string& msg);
 
@@ -345,6 +346,7 @@ static void checkRestoredRam(int frame)
 
 static bool load_game_state(unsigned char *buffer, int len)
 {
+	netStats.rollbacks++;
 	INFO_LOG(NETWORK, "load_game_state");
 
 	rend_start_rollback();
@@ -403,6 +405,7 @@ static bool load_game_state(unsigned char *buffer, int len)
  */
 static bool save_game_state(unsigned char **buffer, int *len, int *checksum, int frame)
 {
+	netStats.saves++;
 	verify(!emu.getSh4Executor()->IsCpuRunning());
 	lastSavedFrame = frame;
 	// TODO this is way too much memory
@@ -740,7 +743,14 @@ void startSession(int localPort, int localPlayerNum)
 #else
 		const char arch[] = "other";
 #endif
-		MD5Sum().add(arch, (unsigned long)sizeof(arch)).getDigest(cpu);
+		if (config::NetplayTestAnyCpu)
+		{
+			// a test: the two sides may differ (and will drift apart)
+			const char any[] = "any";
+			MD5Sum().add(any, (unsigned long)sizeof(any)).getDigest(cpu);
+		}
+		else
+			MD5Sum().add(arch, (unsigned long)sizeof(arch)).getDigest(cpu);
 		// The player's settings that reach the emulated machine (the video cable the game
 		// reads, the sound DSP, the RAM size) and the ones forced online (emulator.cpp)
 		MD5Sum().add((u8)config::Cable)
@@ -916,6 +926,27 @@ bool nextFrame()
 		if (msPerFrameIndex >= (int)msPerFrame.size())
 			msPerFrameIndex = 0;
 		msPerFrameAvg = std::accumulate(msPerFrame.begin(), msPerFrame.end(), 0) / msPerFrame.size();
+	}
+	// hotd2-vr: every 5 s what netplay costs, in the log (adb logcat on the headset)
+	{
+		static time_point<steady_clock> since;
+		static long long longest;
+		if (since == time_point<steady_clock>())
+			since = now;
+		if (lastFrameTime != time_point<steady_clock>())
+			longest = std::max<long long>(longest, duration_cast<milliseconds>(now - lastFrameTime).count());
+		netStats.frames++;
+		const double secs = duration_cast<milliseconds>(now - since).count() / 1000.0;
+		if (secs >= 5.0)
+		{
+			const int again = netStats.saves - netStats.frames;
+			NOTICE_LOG(NETWORK, "GGPO stats %.1f s: %d frames (%.1f fps), %d rollbacks, %d frames simulated again (%d%%), longest frame %lld ms",
+					secs, netStats.frames, netStats.frames / secs, netStats.rollbacks, std::max(0, again),
+					netStats.frames > 0 ? std::max(0, again) * 100 / netStats.frames : 0, longest);
+			netStats = {};
+			longest = 0;
+			since = now;
+		}
 	}
 	lastFrameTime = now;
 

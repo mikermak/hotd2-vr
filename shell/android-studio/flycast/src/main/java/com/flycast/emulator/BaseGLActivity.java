@@ -146,6 +146,11 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
 
         // When viewing a resource, pass its URI to the native code for opening
         Intent intent = getIntent();
+        // hotd2-vr: settings for this run from the launch (adb shell am start ... --es
+        // hotd2vr.config "network:GGPO=yes,..."), as -config on the PC; a test aid
+        String launchConfig = intent != null ? intent.getStringExtra("hotd2vr.config") : null;
+        if (launchConfig != null && !launchConfig.isEmpty())
+            JNIdc.setConfigOverrides(launchConfig);
         if (Intent.ACTION_VIEW.equals(intent.getAction())) {
             Uri gameUri = intent.getData();
             // Flush the intent to prevent multiple calls

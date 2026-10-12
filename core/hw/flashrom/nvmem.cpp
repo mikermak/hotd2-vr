@@ -200,10 +200,19 @@ static void fixUpDCFlash()
 	if (!memcmp(console_id, "\377\377\377\377\377\377", 6))
 	{
 		srand(now);
+		// (online, hotd2-vr: the same numbers on every machine; rand() is another generator
+		// on Windows than on Android, so a PC and a headset made different console IDs)
+		u32 lcg = now;
+		auto next = [&lcg]() -> u8 {
+			if (!config::GGPOEnable)
+				return (u8)rand();
+			lcg = lcg * 1103515245u + 12345u;
+			return (u8)(lcg >> 16);
+		};
 		u8 sum = 0;
 		for (int i = 0; i < 6; i++)
 		{
-			console_id[i] = rand();
+			console_id[i] = next();
 			console_id[i + 0xA0] = console_id[i];	// copy at 1A0F8
 			sum += console_id[i];
 		}

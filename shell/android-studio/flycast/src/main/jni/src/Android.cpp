@@ -224,6 +224,33 @@ static bool stopEmu()
 	return true;
 }
 
+// hotd2-vr: transient settings for this run, as -config on the PC ("section:key=value,..."),
+// from the launch intent (a test aid: there is no Flycast menu in the headset)
+extern "C" JNIEXPORT void JNICALL Java_com_flycast_emulator_emu_JNIdc_setConfigOverrides(JNIEnv *env, jobject obj, jstring jspec)
+{
+	const std::string spec = jni::String(jspec, false).to_string();
+	size_t start = 0;
+	while (start < spec.size())
+	{
+		size_t end = spec.find(',', start);
+		if (end == std::string::npos)
+			end = spec.size();
+		const std::string item = spec.substr(start, end - start);
+		const size_t colon = item.find(':');
+		const size_t equal = item.find('=', colon == std::string::npos ? 0 : colon);
+		if (colon != std::string::npos && equal != std::string::npos && colon > 0 && equal > colon + 1)
+		{
+			config::setTransient(item.substr(0, colon), item.substr(colon + 1, equal - colon - 1), item.substr(equal + 1));
+			NOTICE_LOG(COMMON, "Launch setting [%s] %s = %s", item.substr(0, colon).c_str(),
+					item.substr(colon + 1, equal - colon - 1).c_str(), item.substr(equal + 1).c_str());
+		}
+		else
+			WARN_LOG(COMMON, "Launch setting '%s' isn't section:key=value", item.c_str());
+		start = end + 1;
+	}
+	config::Settings::instance().load(false);
+}
+
 extern "C" JNIEXPORT void JNICALL Java_com_flycast_emulator_emu_JNIdc_setGameUri(JNIEnv *env, jobject obj, jstring jfileName)
 {
     std::string fileName = jni::String(jfileName, false).to_string();
