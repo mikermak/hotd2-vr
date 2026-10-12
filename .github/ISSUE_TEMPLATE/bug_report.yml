@@ -1,0 +1,69 @@
+name: Bug report (HOTD2 VR)
+description: Something doesn't work in the Quest app or the PCVR build
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! A few details help a lot: most problems depend on the headset, the build and the game version.
+        Please don't attach or link game files: everyone uses their own copy.
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build
+      options:
+        - Quest app (APK)
+        - PCVR (zip for Windows)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Release
+      description: The release you downloaded, e.g. v0.3-test1
+    validations:
+      required: true
+  - type: input
+    id: headset
+    attributes:
+      label: Headset (and for PCVR the runtime)
+      description: e.g. Quest 3; or Valve Index on SteamVR, Quest 3 over Quest Link, Steam Frame...
+    validations:
+      required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options:
+        - The House of the Dead 2, Europe (PAL)
+        - The House of the Dead 2, USA
+        - The House of the Dead 2, Japan
+        - The Maze of the Kings (NAOMI)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: format
+    attributes:
+      label: Game file format
+      description: .chd, .gdi, .cue with .bin files, .cdi, or a MAME set (.zip)
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did, what you expected and what you see or hear instead.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: Already tried
+      description: e.g. stationary boundary, other settings in emu.cfg (which values?)
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        PCVR: flycast.log next to flycast.exe (set log:LogToFile = yes in emu.cfg if it isn't there).
+        Quest: `adb logcat -d -s flycast:*` while connected to a PC, if you can.
+      render: text

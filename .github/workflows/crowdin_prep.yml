@@ -12,6 +12,8 @@ on:
 
 jobs:
   upload_source_file:
+    # hotd2-vr fork: upstream Flycast's translation job, not run here
+    if: github.repository == 'flyinghead/flycast'
     runs-on: ubuntu-latest
     steps:
       - name: Setup Java JDK

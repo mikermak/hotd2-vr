@@ -8,6 +8,8 @@ on:
 
 jobs:
   build:
+    # hotd2-vr fork: upstream Flycast's platforms, not built here (only Android and Windows PCVR)
+    if: github.repository == 'flyinghead/flycast'
     name: ${{ matrix.config.name }}
     runs-on: ${{ matrix.config.os }}
 
