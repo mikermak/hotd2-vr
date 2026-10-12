@@ -16,11 +16,12 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - uses: actions/checkout@v4
+      # actions pinned to a commit (the tag in the comment): the exe is what testers download
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           submodules: recursive
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
         with:
           arch: x64
 
@@ -35,6 +36,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force pcvr-artifact | Out-Null
           Copy-Item build-win/flycast.exe pcvr-artifact/flycast.exe
+          Copy-Item LICENSE pcvr-artifact/LICENSE.txt
           @'
           [config]
           pvr.rend = 0
@@ -42,7 +44,7 @@ jobs:
           vr.Xr = yes
           '@ | Set-Content -Encoding ascii pcvr-artifact/emu.cfg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: hotd2-vr-pcvr-windows-x64
           path: pcvr-artifact/*

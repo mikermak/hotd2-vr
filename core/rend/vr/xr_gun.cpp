@@ -31,7 +31,13 @@ namespace
 
 void logGlErrors(const char *pass)
 {
-	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+	// (hotd2-vr: the first few seconds only, at most 10 lines: checked after every draw it
+	// costs a GPU round trip and filled the log at headset rate)
+	static int checks, logged;
+	if (checks >= 1000 || logged >= 10)
+		return;
+	checks++;
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR && logged < 10; logged++)
 		ERROR_LOG(RENDERER, "VR %s OpenGL error 0x%04x", pass, error);
 }
 

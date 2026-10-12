@@ -109,10 +109,15 @@ bool SDLGLGraphicsContext::init()
 		ERROR_LOG(RENDERER, "gladLoadGL failed or GL 3.0 not supported");
 		return false;
 	}
-	int profile = 0;
-	SDL_GL_GetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, &profile);
-	INFO_LOG(RENDERER, "OpenGL context profile: %s (0x%x)",
-			profile & SDL_GL_CONTEXT_PROFILE_CORE ? "Core" : profile & SDL_GL_CONTEXT_PROFILE_COMPATIBILITY ? "Compatibility" : "unknown", profile);
+	{
+		// the profile the driver actually created (not the one asked for), for PCVR reports
+		GLint profile = 0;
+		glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile);
+		while (glGetError() != GL_NO_ERROR)		// (GL before 3.2 has no profile)
+			;
+		NOTICE_LOG(RENDERER, "OpenGL context profile: %s (0x%x)",
+				profile & GL_CONTEXT_CORE_PROFILE_BIT ? "Core" : profile & GL_CONTEXT_COMPATIBILITY_PROFILE_BIT ? "Compatibility" : "unknown", profile);
+	}
 #endif
 	postInit();
 	

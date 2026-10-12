@@ -1125,7 +1125,13 @@ static GLuint vrScreenVao, vrScreenVbo;
 
 static void logVrScreenGlErrors()
 {
-	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+	// (hotd2-vr: the first few seconds only, at most 10 lines: checked after every draw it
+	// costs a GPU round trip and filled the log at headset rate)
+	static int checks, logged;
+	if (checks >= 1000 || logged >= 10)
+		return;
+	checks++;
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR && logged < 10; logged++)
 		ERROR_LOG(RENDERER, "VR screen OpenGL error 0x%04x", error);
 }
 // What was rendered last, kept until the game puts it on screen (Present). Games also
@@ -1524,8 +1530,10 @@ void main()
 		glcache.UseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "tex"), 0);
 	}
+	static float uploadedD, uploadedFocal;		// what the quad below holds
 	if (vrScreenVbo == 0)
 	{
+		uploadedD = uploadedFocal = -1.f;
 		vrScreenVao = createVertexArray();
 		bindVertexArray(vrScreenVao);
 		glGenBuffers(1, &vrScreenVbo);
@@ -1547,8 +1555,14 @@ void main()
 		-tx,  ty, -d,  0.f, 1.f,
 		 tx,  ty, -d,  1.f, 1.f,
 	};
-	glBindBuffer(GL_ARRAY_BUFFER, vrScreenVbo);
-	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
+	// (uploaded again only when it changes, not for every eye)
+	if (d != uploadedD || config::VrFocal != uploadedFocal)
+	{
+		glBindBuffer(GL_ARRAY_BUFFER, vrScreenVbo);
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quad), quad);
+		uploadedD = d;
+		uploadedFocal = config::VrFocal;
+	}
 	glcache.UseProgram(program);
 	glUniformMatrix4fv(mvpLocation, 1, GL_FALSE, &eye.viewProj[0][0]);
 	glcache.Disable(GL_DEPTH_TEST);

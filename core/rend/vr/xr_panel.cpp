@@ -47,7 +47,13 @@ std::string shown;			// what the picture says now
 
 void logGlErrors()
 {
-	for (GLenum error; (error = glGetError()) != GL_NO_ERROR;)
+	// (hotd2-vr: the first few seconds only, at most 10 lines: checked after every draw it
+	// costs a GPU round trip and filled the log at headset rate)
+	static int checks, logged;
+	if (checks >= 1000 || logged >= 10)
+		return;
+	checks++;
+	for (GLenum error; (error = glGetError()) != GL_NO_ERROR && logged < 10; logged++)
 		ERROR_LOG(RENDERER, "VR panel OpenGL error 0x%04x", error);
 }
 
@@ -243,7 +249,7 @@ void drawPanel(const glm::mat4& viewProj, const Panel& panel)
 	glcache.Disable(GL_DEPTH_TEST);
 	glcache.Disable(GL_CULL_FACE);
 	glcache.Enable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glcache.BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);	// (through the cache: the game's next draw relies on it)
 	bindVertexArray(quadVao);
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	bindVertexArray(0);

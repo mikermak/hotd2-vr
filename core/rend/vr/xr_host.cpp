@@ -103,6 +103,7 @@ bool focused;
 std::chrono::steady_clock::time_point focusLost;
 // The runtime lost the session (start a new one) or wants the app to quit (don't).
 bool sessionLost;
+bool viewsLogged;		// frame()'s once-a-session log of the views
 bool exiting;
 
 struct EyeChain
@@ -261,8 +262,10 @@ bool initActions()
 	any |= suggest("/interaction_profiles/valve/index_controller", {
 		{ stickAction, "/user/hand/left/input/thumbstick" },
 		{ stickAction, "/user/hand/right/input/thumbstick" },
-		{ gripAction, "/user/hand/left/input/squeeze/value" },
-		{ gripAction, "/user/hand/right/input/squeeze/value" },
+		// (squeeze force, not how far the hand is closed: holding an Index already closes it,
+		// and that changed the world size with every stick push)
+		{ gripAction, "/user/hand/left/input/squeeze/force" },
+		{ gripAction, "/user/hand/right/input/squeeze/force" },
 		{ aimAction, "/user/hand/left/input/aim/pose" },
 		{ aimAction, "/user/hand/right/input/aim/pose" },
 		{ handAction, "/user/hand/left/input/grip/pose" },
@@ -974,7 +977,14 @@ bool adjustWorldSize(XrTime time, const glm::vec2& stick)
 	info.action = gripAction;
 	XrActionStateFloat grip { XR_TYPE_ACTION_STATE_FLOAT };
 	const bool gripped = XR_SUCCEEDED(xrGetActionStateFloat(session, &info, &grip)) && grip.isActive && grip.currentState > 0.7f;
-	const glm::vec2 s = gripped ? stick : glm::vec2(0.f);
+	// Only on purpose: the grip squeezed with the stick at rest first, then the stick. A grip
+	// held while the stick was already pushed (a menu, a hand that holds tight) changes nothing.
+	static bool armed;
+	if (!gripped)
+		armed = false;
+	else if (glm::length(stick) < 0.3f)
+		armed = true;
+	const glm::vec2 s = gripped && armed ? stick : glm::vec2(0.f);
 	// the stronger direction only, so a diagonal doesn't change both
 	const bool vertical = std::abs(s.y) >= std::abs(s.x);
 	if (vertical && std::abs(s.y) > 0.5f)
@@ -1687,7 +1697,7 @@ void term()
 	aimAction = handAction = triggerAction = startAction = skipAction = recenterAction = hapticAction = stickAction = gripAction = XR_NULL_HANDLE;
 	requestRefreshRate = nullptr;
 	setPerformanceLevel = nullptr;
-	sessionRunning = focused = drawingEye = false;
+	sessionRunning = focused = drawingEye = viewsLogged = false;
 	sessionLost = exiting = false;
 	originSet = recenterRequested = false;
 	guns[0] = Gun { 0 };
@@ -1824,6 +1834,19 @@ bool frame()
 		}
 	}
 	updateOrigin(located);
+	// once a session, what the view is made of (to compare headsets and runtimes when the
+	// world looks the wrong size)
+	if (located && !viewsLogged)
+	{
+		viewsLogged = true;
+		const float deg = 180.f / 3.14159265f;
+		NOTICE_LOG(RENDERER, "XR: eyes %.1f mm apart; fov left %.1f %.1f %.1f %.1f, right %.1f %.1f %.1f %.1f degrees; %dx%d per eye; "
+				"world %.4f m per game unit, depth scale %.2f",
+				glm::distance(toVec(views[0].pose.position), toVec(views[1].pose.position)) * 1000.f,
+				views[0].fov.angleLeft * deg, views[0].fov.angleRight * deg, views[0].fov.angleUp * deg, views[0].fov.angleDown * deg,
+				views[1].fov.angleLeft * deg, views[1].fov.angleRight * deg, views[1].fov.angleUp * deg, views[1].fov.angleDown * deg,
+				chains[0].width, chains[0].height, worldScale(), (float)config::ExtraDepthScale);
+	}
 	updateLightgun(frameState.predictedDisplayTime);
 
 	XrCompositionLayerProjectionView projViews[2] { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW }, { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
