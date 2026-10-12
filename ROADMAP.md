@@ -38,13 +38,20 @@ same hands and slide reload. On the PC the game can also render at a higher reso
 One player, a gun in each hand: the left gun is player 2. Both health bars, both scores.
 This is also the first step towards real two-player games.
 
-## 4. Two players, two headsets
+## 4. Two players, two headsets (in progress)
 
-Two Quests (or a Quest and a PC) in the same game, each player looking around from their own
-head, standing side by side like at the cabinet.
+Two Quests in the same game, each player looking around from their own head, standing side
+by side like at the cabinet.
 
-- Flycast already has rollback netplay (GGPO) that works with Dreamcast light gun games:
-  both headsets run the same game and only send each other their gun inputs.
+Where it stands (October 2026): the netplay itself works. Two copies stay the exact same game
+frame by frame, also on a bad connection (100 ms, lost packets), with their own saves, and a
+Quest hosting a game keeps full speed while it corrects mispredicted frames. A system menu or
+the Guardian in the headset no longer ends the game for both. Still to come: connecting from
+the headset (a waiting screen, a room code), seeing the other player. A Quest and a PC don't
+play together yet: they round floating point differently, so their games would drift apart.
+
+- Flycast's rollback netplay (GGPO): both headsets run the same game and only send each
+  other their gun inputs. Several fixes in Flycast were needed to keep them exactly in sync.
 - First on the same Wi-Fi, finding each other by themselves (no typing IP addresses).
 - You see the other player's hands and gun next to you.
 - Then over the internet, with a room code.

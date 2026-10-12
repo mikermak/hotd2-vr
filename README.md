@@ -60,8 +60,8 @@ What's next (two players, among others): see the [roadmap](ROADMAP.md).
 | Player 2 joins: a gun in each hand | menu button ≡ | |
 | Menus (the gun's D-pad) | thumbstick | thumbstick |
 | Recenter | X or thumbstick click | thumbstick click |
-| World size (kept) | hold grip + thumbstick up/down | hold grip + thumbstick up/down |
-| Gun size (kept) | hold grip + thumbstick left/right | hold grip + thumbstick left/right |
+| World size (kept) | squeeze grip (thumbstick at rest), then thumbstick up/down | the same |
+| Gun size (kept) | squeeze grip (thumbstick at rest), then thumbstick left/right | the same |
 | Rack the slide (the agent's pistol) | grip, near the back of the pistol, and pull | the same |
 
 The gun goes to the hand you last fired with; B and Y both work, whichever hand holds it.
@@ -106,6 +106,10 @@ Updates install over the old version; settings, saves and the hands stay.
 
 No Dreamcast BIOS is needed: Flycast's built-in replacement (HLE) works.
 
+**Sound but a black headset?** Before v0.4-test1 the picture only came when the headset
+knew where it is in the room, so a Quest with no space set up (room scale greyed out)
+stayed black. Update to the latest release; with an older one, a stationary boundary helps.
+
 ## PCVR
 
 The same, on a PC with a VR headset: SteamVR, Quest Link / Air Link or Virtual Desktop
@@ -126,6 +130,12 @@ or stick is the D-pad (Windows Mixed Reality: a thumbstick click recenters, Vive
 runtime's own recenter). With `vr.DualWield = no` the left Start is player 1's. The first start makes the
 agent's hands, as on the Quest. Settings: `emu.cfg` next to `flycast.exe` (`vr.Xr = yes`
 turns VR on; without a headset the game plays in the window).
+
+Before v0.4-test1 the guns, the laser and the hands didn't show in PCVR (thanks to
+[nn10n10](https://github.com/nn10n10) for the fix). Without them nothing in view has a known
+size, and on a Valve Index just holding the controller counted as squeezing the grip, so
+stick pushes changed the world size. If the world looks the wrong size, set
+`vr.WorldScale = 0.025` in `emu.cfg` (the default) and adjust from there.
 
 ## The agent's hands (from your game)
 
@@ -318,6 +328,13 @@ next to `flycast.exe`), under `[config]`. The useful ones:
 The scripts look for your game in a `game` folder next to the repository, or in
 `%HOTD2VR_DATA%\game`.
 
+## Problems? Ideas?
+
+Open an [issue](https://github.com/mikermak/hotd2-vr/issues): the form asks for the build
+(Quest app or PCVR), the release, the headset (and the PCVR runtime), the game version and a
+log, which is what it takes to find out what's wrong. PCVR writes `flycast.log` next to
+`flycast.exe` with `log:LogToFile = yes` in `emu.cfg`. Never attach or link game files.
+
 ## Credits and licences
 
 - [Flycast](https://github.com/flyinghead/flycast) by flyinghead and contributors, GPL-2.0
@@ -325,7 +342,7 @@ The scripts look for your game in a `game` folder next to the repository, or in
   and `git log master..hotd2-vr` shows every change. Flycast's own readme:
   [README.flycast.md](README.flycast.md).
 - The gun: ["Namco Arcade Gun"](https://sketchfab.com/3d-models/namco-arcade-gun-15fbd5b9add94a34b5c21746e3dd32be)
-  by [Martoscar](https://sketchfab.com/Martoscar), licensed
+  by [Martoscar](https://sketchfab.com/Martoscar), made for Age of Joy, licensed
   [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Changed: re-oriented and
   moved into the controller's aim space, quantised, textures and materials dropped,
   recoloured, converted to a C++ header (`core/rend/vr/gun_model.h`, CC BY 4.0). Since CC
@@ -335,5 +352,6 @@ The scripts look for your game in a `game` folder next to the repository, or in
 - Roboto (Flycast's own copy, on the headset's panel) by Google, Apache-2.0.
 - [MediaPipe](https://github.com/google-ai-edge/mediapipe) by Google, Apache-2.0
   (finger-gun tracker); [Capstone](https://www.capstone-engine.org/), BSD.
+- PCVR rendering in an OpenGL Core Profile: [nn10n10](https://github.com/nn10n10) (pull request #1).
 - Inspired by [DR-89/time-crisis-vr](https://github.com/DR-89/time-crisis-vr).
 - The House of the Dead is a trademark of Sega. Namco is a trademark of Bandai Namco.
