@@ -14,6 +14,8 @@
 #include "network/ggpo.h"
 
 #include <mutex>
+#include <thread>
+#include <chrono>
 #include <deque>
 
 #ifdef LIBRETRO
@@ -147,6 +149,25 @@ public:
 	void reset() {
 		const lock_guard lock(mutex);
 		queue.clear();
+	}
+
+	// hotd2-vr: removes a queued message of this type the renderer hasn't taken yet
+	bool takeBack(MessageType type)
+	{
+		bool found = false;
+		{
+			const lock_guard lock(mutex);
+			for (auto it = queue.begin(); it != queue.end(); ++it)
+				if (it->type == type)
+				{
+					queue.erase(it);
+					found = true;
+					break;
+				}
+		}
+		if (found)
+			dequeueEvent.Set();
+		return found;
 	}
 
 	void cancelEnqueue()
@@ -304,6 +325,18 @@ static PvrMessageQueue pvrQueue;
 bool rend_single_frame(const bool& enabled)
 {
 	FC_PROFILE_SCOPE;
+	// hotd2-vr netplay test aid: with HOTD2VR_STALLRENDER=ms, the render loop stops for that
+	// long every 20 s, as a system overlay does in the headset
+	if (const char *stall = getenv("HOTD2VR_STALLRENDER"))
+	{
+		static auto next = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		if (std::chrono::steady_clock::now() >= next)
+		{
+			NOTICE_LOG(RENDERER, "Test: the render loop stops for %s ms", stall);
+			std::this_thread::sleep_for(std::chrono::milliseconds(atoi(stall)));
+			next = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		}
+	}
 
 	const int timeout = SPG_CONTROL.isPAL() ? 23 : 20;
 	presented = false;
@@ -611,6 +644,38 @@ void rend_start_render()
 	}
 }
 
+// hotd2-vr: online, the emulator mustn't wait long for the renderer. In the headset a system
+// overlay (the Guardian, the menu) can keep the render loop from running for seconds, and the
+// game then stood still: GGPO dropped the connection after 3 s. A frame the renderer hasn't
+// started on after a short wait is taken back: it isn't drawn, which online changes nothing
+// in the game (no framebuffer or RTT copy goes back into VRAM there).
+constexpr u32 OnlineRenderWaitMs = 30;
+
+static bool takeBackPendingRender()
+{
+	if (!pvrQueue.takeBack(PvrMessageQueue::Render))
+		return false;		// the renderer has it: it is drawing it
+	FinishRender(DequeueRender());
+	renderEnd.Set();
+	rend_allow_rollback();
+	return true;
+}
+
+static void waitForRenderer(cResetEvent& event)
+{
+	if (ggpo::active())
+	{
+		if (event.Wait(OnlineRenderWaitMs))
+			return;
+		if (takeBackPendingRender())
+		{
+			event.Wait(0);		// (taken as a finished frame would be: the wait resets it)
+			return;
+		}
+	}
+	event.Wait();
+}
+
 int rend_end_render(int tag, int cycles, int jitter, void *arg)
 {
 	if (settings.platform.isNaomi2())
@@ -626,7 +691,7 @@ int rend_end_render(int tag, int cycles, int jitter, void *arg)
 		asic_RaiseInterrupt(holly_RENDER_DONE_vd);
 	}
 	if (pend_rend && config::ThreadedRendering)
-		renderEnd.Wait();
+		waitForRenderer(renderEnd);
 
 	return 0;
 }
@@ -701,7 +766,7 @@ void rend_allow_rollback()
 void rend_start_rollback()
 {
 	if (config::ThreadedRendering)
-		vramRollback.Wait();
+		waitForRenderer(vramRollback);
 }
 
 void rend_enable_renderer(bool enabled) {

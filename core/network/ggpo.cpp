@@ -793,11 +793,13 @@ void startSession(int localPort, int localPlayerNum)
 		throw FlycastException("GGPO network initialization failed");
 	}
 
-	// automatically disconnect clients after 3000 ms and start our count-down timer
-	// for disconnects after 1000 ms.   To completely disable disconnects, simply use
+	// automatically disconnect clients after 10 s and start our count-down timer
+	// for disconnects after 2 s.   To completely disable disconnects, simply use
 	// a value of 0 for ggpo_set_disconnect_timeout.
-	ggpo_set_disconnect_timeout(ggpoSession, 3000);
-	ggpo_set_disconnect_notify_start(ggpoSession, 1000);
+	// (hotd2-vr: 10 s rather than 3: a headset can be held up for a few seconds, by a system
+	// overlay or tracking that comes back, and that ended the game for both players)
+	ggpo_set_disconnect_timeout(ggpoSession, 10000);
+	ggpo_set_disconnect_notify_start(ggpoSession, 2000);
 
 	ggpo::localPlayerNum = localPlayerNum;
 	GGPOPlayer player{ sizeof(GGPOPlayer), GGPO_PLAYERTYPE_LOCAL, localPlayerNum + 1 };

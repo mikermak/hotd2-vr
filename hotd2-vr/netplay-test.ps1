@@ -36,7 +36,8 @@ param(
 	[string]$Dump = '',
 	[switch]$Pages,
 	[switch]$OwnSaves,
-	[switch]$RollbackCheck,	# compare the RAM after every rollback with a full copy (HOTD2VR_ROLLBACKCHECK)
+	[switch]$RollbackCheck,
+	[int]$StallGuest = 0,	# the guest's render loop stops this many ms every 20 s (as a headset's system overlay)	# compare the RAM after every rollback with a full copy (HOTD2VR_ROLLBACKCHECK)
 	[string]$Region = '',	# 'offset,size,fromFrame,toFrame': that part of RAM every frame (sync.txt.region)
 	[double[]]$Shots = @()
 )
@@ -132,12 +133,13 @@ if ($Region) { $env:HOTD2VR_SYNCREGION = $Region }
 if ($RollbackCheck) { $env:HOTD2VR_ROLLBACKCHECK = '1' }
 foreach ($peer in $peers) {
 	$env:HOTD2VR_SYNCLOG = Join-Path $peer.Dir 'sync.txt'
+	if ($StallGuest -and $peer.Name -eq 'guest') { $env:HOTD2VR_STALLRENDER = $StallGuest } else { Remove-Item Env:HOTD2VR_STALLRENDER -ErrorAction SilentlyContinue }
 	$cfg = "$base,config:vr.UdpPort=$($peer.Port),$($peer.Net)"
 	$peer | Add-Member Proc (Start-Process -FilePath (Join-Path $peer.Dir 'flycast.exe') `
 		-ArgumentList @('-config', $cfg, "`"$GamePath`"") -WorkingDirectory $peer.Dir -PassThru)
 	Start-Sleep -Seconds 1
 }
-foreach ($k in @('HOTD2VR_SYNCLOG', 'HOTD2VR_SYNCDUMP', 'HOTD2VR_SYNCPAGES', 'HOTD2VR_SYNCREGION', 'HOTD2VR_ROLLBACKCHECK') + @($netEnv.Keys)) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+foreach ($k in @('HOTD2VR_SYNCLOG', 'HOTD2VR_SYNCDUMP', 'HOTD2VR_SYNCPAGES', 'HOTD2VR_SYNCREGION', 'HOTD2VR_ROLLBACKCHECK', 'HOTD2VR_STALLRENDER') + @($netEnv.Keys)) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
 
 # What each gun does at time t (s). Buttons: 1 trigger, 2 reload, 4 Start, 128 B.
 function Gun-State([string]$who, [double]$t) {
@@ -238,7 +240,7 @@ foreach ($peer in $peers) {
 	if (Test-Path $log) {
 		$bad = @(Select-String -Path $log -Pattern 'Rollback check').Count
 		if ($RollbackCheck) { "$($peer.Name): rollback check, $bad problem lines" }
-		Select-String -Path $log -Pattern 'GGPO|stopped|Exception|disconnect|Rollback check' |
+		Select-String -Path $log -Pattern 'GGPO|stopped|Exception|disconnect|Rollback check|render loop stops' |
 			Where-Object { $_.Line -notmatch 'GGPO verif' } | Select-Object -Last 4 |
 			ForEach-Object { "$($peer.Name) log: " + ($_.Line -replace '^\S+ \S+ ', '') }
 	}

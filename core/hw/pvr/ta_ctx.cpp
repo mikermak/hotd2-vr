@@ -4,6 +4,7 @@
 #include "Renderer_if.h"
 #include "serialize.h"
 #include "stdclass.h"
+#include "network/ggpo.h"
 
 #include <mutex>
 #include <vector>
@@ -56,8 +57,9 @@ bool QueueRender(TA_context* ctx)
 		RenderCount++;
 		if (RenderCount % (config::SkipFrame + 1) != 0)
 			skipFrame = true;
-		else if (config::ThreadedRendering && rqueue != nullptr
+		else if (config::ThreadedRendering && rqueue != nullptr && !ggpo::active()
 				&& (config::AutoSkipFrame == 0 || (config::AutoSkipFrame == 1 && SH4FastEnough)))
+			// (online, hotd2-vr: skipped instead, see Renderer_if.cpp OnlineRenderWaitMs)
 			// The previous render hasn't completed yet so we wait.
 			// If autoskipframe is enabled (normal level), we only do so if the CPU is running
 			// fast enough over the last frames
