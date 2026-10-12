@@ -1,0 +1,48 @@
+name: Windows PCVR
+
+on:
+  push:
+    branches: [hotd2-vr, 'codex/**']
+  pull_request:
+    branches: [hotd2-vr]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows x64 PCVR Release
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure PCVR Release
+        run: cmake -S . -B build-win -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_OPENXR=ON -DUSE_DX9=OFF
+
+      - name: Build
+        run: cmake --build build-win --parallel
+
+      - name: Package PCVR files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pcvr-artifact | Out-Null
+          Copy-Item build-win/flycast.exe pcvr-artifact/flycast.exe
+          @'
+          [config]
+          pvr.rend = 0
+          rend.NativeDepthInterpolation = yes
+          vr.Xr = yes
+          '@ | Set-Content -Encoding ascii pcvr-artifact/emu.cfg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hotd2-vr-pcvr-windows-x64
+          path: pcvr-artifact/*

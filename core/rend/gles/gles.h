@@ -215,6 +215,32 @@ private:
 	GLuint vertexArray = 0;
 };
 
+inline GLuint createVertexArray()
+{
+#ifndef GLES2
+	GLuint vao;
+	glGenVertexArrays(1, &vao);
+	return vao;
+#else
+	return 0;
+#endif
+}
+
+inline void bindVertexArray(GLuint vao)
+{
+#ifndef GLES2
+	glBindVertexArray(vao);
+#endif
+}
+
+inline void deleteVertexArray(GLuint vao)
+{
+#ifndef GLES2
+	if (vao != 0)
+		glDeleteVertexArrays(1, &vao);
+#endif
+}
+
 class MainVertexArray final : public GlVertexArray
 {
 protected:
