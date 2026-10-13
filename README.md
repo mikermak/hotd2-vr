@@ -59,7 +59,8 @@ What's next (two players, among others): see the [roadmap](ROADMAP.md).
 | Start, pause | | A |
 | Player 2 joins: a gun in each hand | menu button ≡ | |
 | Menus (the gun's D-pad) | thumbstick | thumbstick |
-| Recenter | X or thumbstick click | thumbstick click |
+| Recenter | X or thumbstick click | |
+| Laser off/on (kept) | | thumbstick click |
 | World size (kept) | squeeze grip (thumbstick at rest), then thumbstick up/down | the same |
 | Gun size (kept) | squeeze grip (thumbstick at rest), then thumbstick left/right | the same |
 | Rack the slide (the agent's pistol) | grip, near the back of the pistol, and pull | the same |
@@ -124,10 +125,10 @@ tell me how it goes.
    `.gdi`, `.cue` or `.cdi`) and start it. It plays in the headset; the window stays as it was.
 
 Controllers: Quest Touch as on the Quest. Valve Index: A is Start (the left A lets player 2
-join), B the gun's B, a thumbstick click recenters. Vive wands and Windows Mixed Reality: the
-menu button is Start (the left one lets player 2 join), a click on the pad the gun's B; the pad
-or stick is the D-pad (Windows Mixed Reality: a thumbstick click recenters, Vive wands: the
-runtime's own recenter). With `vr.DualWield = no` the left Start is player 1's. The first start makes the
+join), B the gun's B, the left thumbstick click recenters, the right one turns the laser off
+or on. Vive wands and Windows Mixed Reality: the menu button is Start (the left one lets player
+2 join), a click on the pad the gun's B; the pad or stick is the D-pad (Windows Mixed Reality:
+the thumbstick clicks as on the Index, Vive wands: the runtime's own recenter). With `vr.DualWield = no` the left Start is player 1's. The first start makes the
 agent's hands, as on the Quest. Settings: `emu.cfg` next to `flycast.exe` (`vr.Xr = yes`
 turns VR on; without a headset the game plays in the window).
 
@@ -249,7 +250,7 @@ next to `flycast.exe`), under `[config]`. The useful ones:
 | `vr.WorldScale` | 0.025 | metres per game unit (also set with grip + thumbstick) |
 | `vr.FovScale` | 2 (profile) | how much wider than the original (tan of the half angle) |
 | `vr.WidenFov` | yes | widen through the game's own field of view (the profile knows where) |
-| `vr.Laser` | yes | laser line and dot |
+| `vr.Laser` | yes | laser line and dot (also with a click on the right thumbstick) |
 | `vr.ShowGun` | yes | the gun model |
 | `vr.GunScale` | 0.68 | size of the gun, times the 25 cm arcade gun it is modelled on (also set with grip + thumbstick) |
 | `vr.GameHands` | yes | the agent's hands and pistol, or the hero's staff (made from the game at the first start) |

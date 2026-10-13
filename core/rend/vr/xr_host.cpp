@@ -93,7 +93,7 @@ XrPath handPaths[2];
 XrSpace aimSpaces[2];
 XrSpace gripSpaces[2];		// the hand on the handle (grip pose): where the gun's grip goes
 XrActionSet actionSet = XR_NULL_HANDLE;
-XrAction aimAction, handAction, triggerAction, startAction, skipAction, recenterAction, hapticAction, stickAction, gripAction;
+XrAction aimAction, handAction, triggerAction, startAction, skipAction, recenterAction, laserAction, hapticAction, stickAction, gripAction;
 PFN_xrRequestDisplayRefreshRateFB requestRefreshRate;
 PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformanceLevel;
 
@@ -152,7 +152,7 @@ struct Gun
 Gun guns[2] { { 0 }, { 1, Left } };
 bool dualWield;
 XrTime dualSince;
-bool leftStartWas, recenterWas;
+bool leftStartWas, recenterWas, laserWas;
 // A game (re)started: one gun again (EventManager calls on the emulator's thread).
 std::atomic<bool> newGame;
 struct NewGameRegistration
@@ -213,6 +213,7 @@ bool initActions()
 			|| !createAction(startAction, "start", "Start (left: player 2 joins)", XR_ACTION_TYPE_BOOLEAN_INPUT, true)
 			|| !createAction(skipAction, "skip", "Skip, back (the gun's B)", XR_ACTION_TYPE_BOOLEAN_INPUT, true)
 			|| !createAction(recenterAction, "recenter", "Recenter", XR_ACTION_TYPE_BOOLEAN_INPUT)
+			|| !createAction(laserAction, "laser", "Laser on/off", XR_ACTION_TYPE_BOOLEAN_INPUT)
 			|| !createAction(hapticAction, "recoil", "Recoil", XR_ACTION_TYPE_VIBRATION_OUTPUT, true)
 			|| !createAction(stickAction, "stick", "Menus (D-pad), world size", XR_ACTION_TYPE_VECTOR2F_INPUT)
 			|| !createAction(gripAction, "grip", "Rack the slide; hold for world size", XR_ACTION_TYPE_FLOAT_INPUT, true))
@@ -220,7 +221,8 @@ bool initActions()
 	// Either trigger fires; shooting away from the screen reloads. Start (pauses): A. The
 	// menu button on the left lets player 2 join (vr.DualWield), else it is player 1's Start
 	// too. The gun's B (skips a story scene, backs out of menus): B or Y, under the thumb of
-	// whichever hand holds the gun (with two guns: each its player's). Recenter: X, or a thumbstick click.
+	// whichever hand holds the gun (with two guns: each its player's). Recenter: X, or the left
+	// thumbstick click. The right thumbstick click turns the laser off or on (kept).
 	// Thumbstick: the gun's D-pad (menus); with a grip held, up/down sizes the world. The
 	// other hand's grip racks the game pistol's slide.
 	auto suggest = [](const char *profile, std::initializer_list<std::pair<XrAction, const char *>> list) {
@@ -250,15 +252,16 @@ bool initActions()
 		{ skipAction, "/user/hand/left/input/y/click" },
 		{ recenterAction, "/user/hand/left/input/x/click" },
 		{ recenterAction, "/user/hand/left/input/thumbstick/click" },
-		{ recenterAction, "/user/hand/right/input/thumbstick/click" },
+		{ laserAction, "/user/hand/right/input/thumbstick/click" },
 		{ hapticAction, "/user/hand/left/output/haptic" },
 		{ hapticAction, "/user/hand/right/output/haptic" },
 	});
 #ifndef __ANDROID__
 	// PCVR: the other controllers, as near as they come: a Start on each hand (the left one
-	// lets player 2 join) and the gun's B. Index: A and B, recenter with a stick click. Vive
-	// wands and Windows Mixed Reality: the menu button is Start, a click on the pad the gun's
-	// B; the pad or stick is the D-pad.
+	// lets player 2 join) and the gun's B. Index: A and B, recenter with the left stick click,
+	// the laser with the right one. Vive wands and Windows Mixed Reality: the menu button is
+	// Start, a click on the pad the gun's B; the pad or stick is the D-pad (Windows Mixed
+	// Reality: the stick clicks as on the Index).
 	any |= suggest("/interaction_profiles/valve/index_controller", {
 		{ stickAction, "/user/hand/left/input/thumbstick" },
 		{ stickAction, "/user/hand/right/input/thumbstick" },
@@ -277,7 +280,7 @@ bool initActions()
 		{ skipAction, "/user/hand/right/input/b/click" },
 		{ skipAction, "/user/hand/left/input/b/click" },
 		{ recenterAction, "/user/hand/left/input/thumbstick/click" },
-		{ recenterAction, "/user/hand/right/input/thumbstick/click" },
+		{ laserAction, "/user/hand/right/input/thumbstick/click" },
 		{ hapticAction, "/user/hand/left/output/haptic" },
 		{ hapticAction, "/user/hand/right/output/haptic" },
 	});
@@ -315,7 +318,7 @@ bool initActions()
 		{ skipAction, "/user/hand/right/input/trackpad/click" },
 		{ skipAction, "/user/hand/left/input/trackpad/click" },
 		{ recenterAction, "/user/hand/left/input/thumbstick/click" },
-		{ recenterAction, "/user/hand/right/input/thumbstick/click" },
+		{ laserAction, "/user/hand/right/input/thumbstick/click" },
 		{ hapticAction, "/user/hand/left/output/haptic" },
 		{ hapticAction, "/user/hand/right/output/haptic" },
 	});
@@ -1349,6 +1352,17 @@ void updateLightgun(XrTime time)
 	if (recenter && !recenterWas)
 		recenterRequested = true;
 	recenterWas = recenter;
+	// the right thumbstick click: the laser line and dot off or on, kept in emu.cfg (the line
+	// going or coming back says it; a tick in the hand too)
+	const bool laser = boolAction(laserAction);
+	if (laser && !laserWas)
+	{
+		config::VrLaser.set(!config::VrLaser);
+		config::saveBool("config", "vr.Laser", config::VrLaser);
+		haptic(Right, 0.03f, 0.4f);
+		NOTICE_LOG(INPUT, "XR: laser %s", config::VrLaser ? "on" : "off");
+	}
+	laserWas = laser;
 	const glm::vec2 stick = stickAction2();
 	const u32 dpad = adjustWorldSize(time, stick) ? dpadFromStick(glm::vec2(0.f)) : dpadFromStick(stick);
 
@@ -1694,7 +1708,7 @@ void term()
 	session = XR_NULL_HANDLE;
 	localSpace = aimSpaces[Left] = aimSpaces[Right] = gripSpaces[Left] = gripSpaces[Right] = XR_NULL_HANDLE;
 	actionSet = XR_NULL_HANDLE;
-	aimAction = handAction = triggerAction = startAction = skipAction = recenterAction = hapticAction = stickAction = gripAction = XR_NULL_HANDLE;
+	aimAction = handAction = triggerAction = startAction = skipAction = recenterAction = laserAction = hapticAction = stickAction = gripAction = XR_NULL_HANDLE;
 	requestRefreshRate = nullptr;
 	setPerformanceLevel = nullptr;
 	sessionRunning = focused = drawingEye = viewsLogged = false;
@@ -1702,7 +1716,7 @@ void term()
 	originSet = recenterRequested = false;
 	guns[0] = Gun { 0 };
 	guns[1] = Gun { 1, Left };
-	dualWield = leftStartWas = recenterWas = false;
+	dualWield = leftStartWas = recenterWas = laserWas = false;
 	initTried = false;
 }
 
