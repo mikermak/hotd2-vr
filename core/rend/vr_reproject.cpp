@@ -245,13 +245,15 @@ static std::vector<GameProfile> makeProfiles()
 	GameProfile p;
 	// The House of the Dead 2 (PAL). Its four perspective setups (0x8C029B48, 0x8C02B2C6,
 	// 0x8C02B30A, 0x8C02B34E) load 41.1 degrees from two literals and call 0x8C0383C0.
+	// Widened 3 times (tan of the half angle): 41.1 -> 96.7 degrees, 113 wide, about what a
+	// Quest 3 eye shows (the game draws and culls with it, still at the headset's 72 Hz).
 	// Its hit marker: a glow (0x59bb80, ~62 px) on the shot and rays (0x587380) flying out
 	// ~100 px, drawn at W 0.9..1.01 (measured on the PC, chapter 1 and the attract demo).
 	// Player 2's prompt in the bottom right corner: 0x57b700 and 0x56bb00 (chapter 1).
 	p.gameId = "MK-5100250";
 	p.projAddr = 0x4C65E0;
 	p.viewportAddr = 0x4C6708;
-	p.fovScale = 2.f;
+	p.fovScale = 3.f;
 	p.fovLiterals[0] = 0x029C12;
 	p.fovLiterals[1] = 0x02B370;
 	p.fovStock = 7484;
@@ -335,9 +337,8 @@ static std::vector<GameProfile> makeProfiles()
 	// instead; FREE PLAY at 1.000 is snapped like the other layers.
 	p.hudW = 1.082f;
 	p.flatScreens = true;
-	// The camera rides about 14.5 units over the floor in the maze: eye height at 0.11 m a
-	// unit, 4.4 times HOTD2's 0.025.
-	p.unitScale = 4.4f;
+	// (Its units are HOTD2's size: the camera rides about 14.5 units over the floor in the
+	// maze, HOTD2's 15 over the street.)
 	// The hero's staff, in his right fist, as the attract demo shows it from 32 s on (and
 	// the story's intro): the rod's texture and the hero's body's (his gloves are on it), in
 	// VRAM where each of the two scenes puts them. (The heroine's body is another texture.)
@@ -666,6 +667,209 @@ static void snapNear2D(rend_context& ctx, const std::vector<PolyParam>& list, u3
 		if (bucket >= 0 && bucket < (int)std::size(seen) && seen[bucket]++ == 0)
 			NOTICE_LOG(RENDERER, "VR: 2D layer at W %.3f (%u verts at %.0f,%.0f) put on the 2D plane",
 					w, pp.count, ctx.verts[pp.first].x, ctx.verts[pp.first].y);
+	}
+}
+
+// What the game shows of its 2D is what lies on its 640x480 screen: a TV cuts the rest off,
+// and in the headset it would hang in the room around the 2D plane. HOTD2's chapter title
+// cards zoom in from text three times the screen's width (W 1, on the plane), and the pause
+// freezes such a frame: the huge copy filled the view. A 2D polygon wholly off the screen
+// goes; an axis-aligned quad (the game's sprites and text) is cut to the screen, its texture
+// and colours with it (one W over the quad: they are linear in x and y). Anything else
+// partly off the screen stays as it is.
+static void cropToScreen(rend_context& ctx, const PolyParam& pp, float fbWidth, float fbHeight)
+{
+	float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+	for (u32 i = pp.first; i < pp.first + pp.count; i++)
+	{
+		const Vertex& v = ctx.verts[i];
+		if (!std::isfinite(v.x) || !std::isfinite(v.y))
+			return;		// hidden already
+		x0 = std::min(x0, v.x);
+		x1 = std::max(x1, v.x);
+		y0 = std::min(y0, v.y);
+		y1 = std::max(y1, v.y);
+	}
+	if (x1 <= 0.f || y1 <= 0.f || x0 >= fbWidth || y0 >= fbHeight)
+	{
+		hideVertices(ctx, pp);
+		return;
+	}
+	if ((x0 >= 0.f && y0 >= 0.f && x1 <= fbWidth && y1 <= fbHeight) || pp.count != 4)
+		return;
+	// the vertex at each corner: top left, top right, bottom left, bottom right
+	const float ex = std::max(x1 - x0, 1.f) * 1e-4f, ey = std::max(y1 - y0, 1.f) * 1e-4f;
+	if (x1 - x0 < 0.01f || y1 - y0 < 0.01f)
+		return;
+	int at[4] { -1, -1, -1, -1 };
+	for (u32 k = 0; k < 4; k++)
+	{
+		const Vertex& v = ctx.verts[pp.first + k];
+		const int cx = std::abs(v.x - x0) <= ex ? 0 : std::abs(v.x - x1) <= ex ? 1 : -1;
+		const int cy = std::abs(v.y - y0) <= ey ? 0 : std::abs(v.y - y1) <= ey ? 1 : -1;
+		if (cx < 0 || cy < 0 || at[cy * 2 + cx] >= 0)
+			return;		// not a rectangle on the screen's axes
+		at[cy * 2 + cx] = (int)k;
+	}
+	Vertex c[4];
+	for (int k = 0; k < 4; k++)
+		c[k] = ctx.verts[pp.first + at[k]];
+	auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
+	auto bilinear = [&](float tl, float tr, float bl, float br, float s, float t) {
+		return lerp(lerp(tl, tr, s), lerp(bl, br, s), t);
+	};
+	auto colour = [&](const u8 (&tl)[4], const u8 (&tr)[4], const u8 (&bl)[4], const u8 (&br)[4], u8 (&out)[4], float s, float t) {
+		for (int j = 0; j < 4; j++)
+			out[j] = (u8)std::clamp((int)std::lround(bilinear(tl[j], tr[j], bl[j], br[j], s, t)), 0, 255);
+	};
+	const float nx0 = std::max(x0, 0.f), nx1 = std::min(x1, fbWidth);
+	const float ny0 = std::max(y0, 0.f), ny1 = std::min(y1, fbHeight);
+	for (int k = 0; k < 4; k++)
+	{
+		const float x = (k & 1) ? nx1 : nx0, y = (k & 2) ? ny1 : ny0;
+		const float s = (x - x0) / (x1 - x0), t = (y - y0) / (y1 - y0);
+		Vertex& v = ctx.verts[pp.first + at[k]];
+		v.x = x;
+		v.y = y;
+		v.z = bilinear(c[0].z, c[1].z, c[2].z, c[3].z, s, t);
+		v.u = bilinear(c[0].u, c[1].u, c[2].u, c[3].u, s, t);
+		v.v = bilinear(c[0].v, c[1].v, c[2].v, c[3].v, s, t);
+		v.u1 = bilinear(c[0].u1, c[1].u1, c[2].u1, c[3].u1, s, t);
+		v.v1 = bilinear(c[0].v1, c[1].v1, c[2].v1, c[3].v1, s, t);
+		colour(c[0].col, c[1].col, c[2].col, c[3].col, v.col, s, t);
+		colour(c[0].spc, c[1].spc, c[2].spc, c[3].spc, v.spc, s, t);
+		colour(c[0].col1, c[1].col1, c[2].col1, c[3].col1, v.col1, s, t);
+		colour(c[0].spc1, c[1].spc1, c[2].spc1, c[3].spc1, v.spc1, s, t);
+	}
+}
+
+// Everything on the 2D plane, cut to the screen.
+static void cropPlaneToScreen(rend_context& ctx, const std::vector<PolyParam>& list, u32 from, u32 to, float hudW,
+		int fbWidth, int fbHeight)
+{
+	for (u32 n = from; n < to && n < list.size(); n++)
+	{
+		const PolyParam& pp = list[n];
+		if (pp.count < 3 || pp.first + pp.count > ctx.verts.size())
+			continue;
+		u32 i = pp.first;
+		while (i < pp.first + pp.count && onOverlay(ctx.verts[i], hudW))
+			i++;
+		if (i == pp.first + pp.count)
+			cropToScreen(ctx, pp, (float)fbWidth, (float)fbHeight);
+	}
+}
+
+// A textured polygon whose texture lies on the screen texel for pixel, upright or turned a
+// quarter (the map from texels to pixels over its first triangle: one 1 per row, no scale).
+static bool texelForPixel(const rend_context& ctx, const PolyParam& pp)
+{
+	if (!pp.pcw.Texture || pp.tcw.StrideSel)
+		return false;
+	const float tw = (float)(8 << pp.tsp.TexU);
+	const float th = pp.tcw.MipMapped ? tw : (float)(8 << pp.tsp.TexV);
+	const Vertex& a = ctx.verts[pp.first];
+	const Vertex& b = ctx.verts[pp.first + 1];
+	const Vertex& c = ctx.verts[pp.first + 2];
+	// texels (s, t) and pixels (x, y) from the first corner to the other two
+	const float s1 = (b.u - a.u) * tw, s2 = (c.u - a.u) * tw;
+	const float t1 = (b.v - a.v) * th, t2 = (c.v - a.v) * th;
+	const float det = s1 * t2 - s2 * t1;
+	if (!(std::abs(det) > 1e-3f))
+		return false;
+	const float x1 = b.x - a.x, x2 = c.x - a.x, y1 = b.y - a.y, y2 = c.y - a.y;
+	// pixels per texel: [x1 x2; y1 y2] times the inverse of [s1 s2; t1 t2]
+	const float jxs = (x1 * t2 - x2 * t1) / det, jxt = (x2 * s1 - x1 * s2) / det;
+	const float jys = (y1 * t2 - y2 * t1) / det, jyt = (y2 * s1 - y1 * s2) / det;
+	auto one = [](float v) { return std::abs(std::abs(v) - 1.f) < 0.01f; };
+	auto zero = [](float v) { return std::abs(v) < 0.01f; };
+	return (one(jxs) && one(jyt) && zero(jxt) && zero(jys)) || (one(jxt) && one(jys) && zero(jxs) && zero(jyt));
+}
+
+// 2D the game draws far from its 2D plane's W, at any W. HOTD2 pauses with "1P PAUSE" at W
+// 0.0006 (depth test always: on top of everything), its sight at W 0.4, the attract's date
+// card over a backdrop at W 2, and its menus and the route map over full-screen pictures at
+// W 200 and 100 with real 3D in front of them (the mode drum at W 78-88, the map's markers
+// at W 90-101). Through the 3D path such a layer came out as big as the widening (three
+// times) and, close to the eyes, bent by the comfort zone. What gives it away: one W over
+// the polygon, every corner on a whole pixel and its texture drawn texel for pixel, upright
+// (the game's own sprite and text routines). Whole pixels alone are not enough: The Maze of
+// the Kings' corridor walls facing the camera land on them in its widened view (focal 240),
+// but never texel for pixel; HOTD2's projected 3D does neither (both checked over rips of
+// the whole game, stock and widened, on the PC). Or the depth test "always" well in front
+// of the plane. Such a layer
+//  - in front of the depth the 2D plane is shown at (vr.HudDepth): onto the plane, in its
+//    order (in front of the plane's layers, or behind them), so it sits where all the
+//    game's other 2D is;
+//  - behind it (a full-screen picture with 3D in front of it): kept at its W, so what the
+//    game draws in front of it stays in front, but scaled to the stock framing (by the
+//    game's focal over the stock one) and cut to the screen, so it is as big as on the TV.
+// (The background plane, the first opaque polygon, is never one of them.)
+static void place2DLayers(rend_context& ctx, const std::vector<PolyParam>& list, u32 from, u32 to, float hudW,
+		int fbWidth, int fbHeight, glm::vec2 unwiden)
+{
+	const GameProfile *prof = activeProfile;
+	const float SnapMaxW = prof != nullptr ? prof->snapMaxW : 1.05f;
+	const float hudDepth = config::VrHudDepth;
+	const glm::vec2 centre(fbWidth * 0.5f, fbHeight * 0.5f);
+	for (u32 n = from; n < to && n < list.size(); n++)
+	{
+		const PolyParam& pp = list[n];
+		if (pp.count < 3 || pp.first + pp.count > ctx.verts.size())
+			continue;
+		const float z = ctx.verts[pp.first].z;
+		if (!(z > 0.f) || !std::isfinite(z))
+			continue;
+		const float w = 1.f / z;
+		if (std::abs(w - hudW) < 0.002f)
+			continue;	// on the plane already
+		bool aligned = true, onScreen = true;
+		u32 i = pp.first;
+		for (; i < pp.first + pp.count; i++)
+		{
+			const Vertex& v = ctx.verts[i];
+			if (std::abs(v.z - z) > z * 1e-5f || !std::isfinite(v.x) || !std::isfinite(v.y))
+				break;	// not flat (3D), or hidden
+			// (far out, every float is a whole number: the game's clamped near-plane corners)
+			aligned = aligned && std::abs(v.x) < 4096.f && std::abs(v.y) < 4096.f
+					&& std::abs(v.x - std::round(v.x)) < 0.01f && std::abs(v.y - std::round(v.y)) < 0.01f;
+			onScreen = onScreen && v.x >= -1.f && v.x <= fbWidth + 1.f && v.y >= -1.f && v.y <= fbHeight + 1.f;
+		}
+		if (i != pp.first + pp.count)
+			continue;
+		const bool onTop = pp.isp.DepthMode == 7 && w < SnapMinW && onScreen;
+		const bool sprite = aligned && texelForPixel(ctx, pp);
+		if (!sprite && !onTop)
+			continue;
+		const char *how;
+		if (w < hudDepth)
+		{
+			const float t = w < hudW ? (w - hudW) / (hudW - SnapMinW) : (w - hudW) / (SnapMaxW - hudW);
+			const float snapped = hudW + 0.0015f * std::clamp(t, -1.f, 1.f);
+			for (u32 j = pp.first; j < pp.first + pp.count; j++)
+				ctx.verts[j].z = 1.f / snapped;
+			how = "put on the 2D plane";
+		}
+		else
+		{
+			cropToScreen(ctx, pp, (float)fbWidth, (float)fbHeight);
+			if (!std::isfinite(ctx.verts[pp.first].x))
+				continue;	// off the screen: gone
+			for (u32 j = pp.first; j < pp.first + pp.count; j++)
+			{
+				Vertex& v = ctx.verts[j];
+				v.x = centre.x + (v.x - centre.x) * unwiden.x;
+				v.y = centre.y + (v.y - centre.y) * unwiden.y;
+			}
+			how = "kept at its W, at the stock framing";
+		}
+		// what gets placed, once per W (in 0.01 steps, a few hundred), to check nothing 3D is caught
+		static std::unordered_set<int> seen;
+		const int bucket = (int)std::lround(w * 100.f);
+		if (seen.size() < 256 && seen.insert(bucket).second)
+			NOTICE_LOG(RENDERER, "VR: 2D layer at W %.4f (%u verts at %.0f,%.0f, tex %06x%s) %s",
+					w, pp.count, ctx.verts[pp.first].x, ctx.verts[pp.first].y, pp.pcw.Texture ? pp.tcw.TexAddr << 3 : 0,
+					sprite ? "" : ", depth test always", how);
 	}
 }
 
@@ -1118,11 +1322,20 @@ void dropShotMarker(rend_context& ctx, const RenderPass& pass, const RenderPass&
 		snapNear2D(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight);
 		snapNear2D(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight);
 		snapNear2D(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight);
+		// (the stock framing: the plane's focal over the one the game draws with now)
+		const glm::vec2 unwiden = readGameFocal() / (float)config::VrFocal;
+		place2DLayers(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight, unwiden);
+		place2DLayers(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight, unwiden);
+		place2DLayers(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight, unwiden);
 	}
 	hidePlayer2Prompt(ctx, pass, previousPass, hudW, fbWidth, fbHeight);
 	keepMixedIn3D(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW);
 	keepMixedIn3D(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW);
 	keepMixedIn3D(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW);
+	// (after the player 2 prompt went: it looks for its pictures where the game put them)
+	cropPlaneToScreen(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight);
+	cropPlaneToScreen(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight);
+	cropPlaneToScreen(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight);
 
 	// the recent shots, in DC framebuffer pixels
 	struct Recent { glm::vec2 gun; int64_t since, at; bool into3D; };

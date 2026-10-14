@@ -102,16 +102,17 @@ Option<bool> VrXr("vr.Xr", false);			// PCVR (OpenXR), when asked: the PCVR zip'
 #endif
 Option<bool> VrXrGun("vr.XrGun", true);		// the controllers drive the light gun (the one that fires holds it)
 Option<bool> VrWiden("vr.Widen", true);		// let the game profile widen the view (vr.FovScale)
-Option<float> VrWorldScale("vr.WorldScale", 0.025f);	// metres per game unit
+Option<float> VrWorldScale("vr.WorldScale", 0.11f);	// metres per game unit (HOTD2's camera rides 15 units over the street: eye height)
 Option<float> VrXrResolution("vr.XrResolution", 1.f);	// eye buffer size, times the recommended size
+Option<int> VrMsaa("vr.Msaa", 1);		// smooth edges: multisampling, e.g. 4 (the Quest only; 1: off)
 Option<int> VrXrRefreshRate("vr.XrRefreshRate", 72);	// Hz
 Option<bool> VrLaser("vr.Laser", true);		// aim line and dot from the gun
 Option<bool> VrShowGun("vr.ShowGun", true);	// a gun in the shooting hand
 Option<float> VrGunScale("vr.GunScale", 0.68f);	// its size, times the model's (24.7 cm long); 0.68: 17 cm, a compact pistol
 Option<bool> VrGameHands("vr.GameHands", true);	// the agent's own hands and pistol from the game, when files/hands.bin is there
 Option<float> VrHandScale("vr.HandScale", 1.f);	// their size, times the ripped model's (a 20 cm pistol)
-Option<bool> VrSlideReload("vr.SlideReload", true);
-Option<bool> VrStaffHand("vr.StaffHand", false);	// the hero's glove around his staff (The Maze of the Kings)	// with them, the other hand racks the slide to reload
+Option<bool> VrSlideReload("vr.SlideReload", true);	// with them, the other hand racks the slide to reload
+Option<bool> VrStaffHand("vr.StaffHand", false);	// the hero's glove around his staff (The Maze of the Kings)
 Option<int> VrDebugShots("vr.DebugShots", 0);	// PC test aid: a screenshot every N seconds of game time (0: off)
 Option<bool> VrDualWield("vr.DualWield", true);	// the left controller's Start: player 2 joins, a gun in each hand
 Option<bool> VrHideP2Prompt("vr.HideP2Prompt", true);	// no "PRESS START BUTTON" for player 2 floating in the room

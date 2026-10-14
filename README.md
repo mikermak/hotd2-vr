@@ -35,7 +35,10 @@ What's next (two players, among others): see the [roadmap](ROADMAP.md).
 - **2D on a screen in front of you.** Menus, text and the HUD sit on a plane at a fixed
   distance, framed as in the original. The game's own hit flash (a glow and rays drawn
   just off its 2D plane, which in the headset came right at your face) is left out after
-  shots into the 3D scene: the aim dot, blood and the hit show where it went.
+  shots into the 3D scene: the aim dot, blood and the hit show where it went. 2D the game
+  draws at other depths keeps its original size too: the pause text on the plane, the menus'
+  and the route map's pictures behind their 3D, as on the TV. What lies past the screen's
+  edges is cut off, as a TV does (a chapter title zooming in no longer fills the room).
 - **The light gun.** Either controller. Shots are traced into the rebuilt scene from the
   barrel and handed to the game at its own screen framing, so they land on the dot; a
   laser line and dot show where (optional). Recoil, muzzle flash, smoke and a haptic
@@ -111,6 +114,10 @@ No Dreamcast BIOS is needed: Flycast's built-in replacement (HLE) works.
 knew where it is in the room, so a Quest with no space set up (room scale greyed out)
 stayed black. Update to the latest release; with an older one, a stationary boundary helps.
 
+**Feel like a giant over a diorama?** Before v0.4-test1 the world was shown at a quarter of its
+size. It is now life size: the game's camera rides at eye height. A size you set yourself
+(grip + thumbstick up/down) is kept; push the thumbstick up to make the world bigger.
+
 ## PCVR
 
 The same, on a PC with a VR headset: SteamVR, Quest Link / Air Link or Virtual Desktop
@@ -136,7 +143,7 @@ Before v0.4-test1 the guns, the laser and the hands didn't show in PCVR (thanks 
 [nn10n10](https://github.com/nn10n10) for the fix). Without them nothing in view has a known
 size, and on a Valve Index just holding the controller counted as squeezing the grip, so
 stick pushes changed the world size. If the world looks the wrong size, set
-`vr.WorldScale = 0.025` in `emu.cfg` (the default) and adjust from there.
+`vr.WorldScale = 0.11` in `emu.cfg` (the default) and adjust from there.
 
 ## The agent's hands (from your game)
 
@@ -247,7 +254,7 @@ next to `flycast.exe`), under `[config]`. The useful ones:
 
 | Option | Default | |
 |---|---|---|
-| `vr.WorldScale` | 0.025 | metres per game unit (also set with grip + thumbstick) |
+| `vr.WorldScale` | 0.11 | metres per game unit, so the game's camera is at eye height (also set with grip + thumbstick) |
 | `vr.FovScale` | 2 (profile) | how much wider than the original (tan of the half angle) |
 | `vr.WidenFov` | yes | widen through the game's own field of view (the profile knows where) |
 | `vr.Laser` | yes | laser line and dot (also with a click on the right thumbstick) |

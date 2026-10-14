@@ -113,6 +113,7 @@ struct EyeChain
 	std::vector<SwapchainImage> images;
 	std::vector<GLuint> fbos;
 	GLuint depthStencil = 0;
+	int samples = 1;	// MSAA (the GPU resolves it on the way out of its tile memory)
 };
 EyeChain chains[2];
 XrView views[2] { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
@@ -392,26 +393,55 @@ bool initSwapchains()
 		c.images.assign(imageCount, { SwapchainImageType });
 		if (!XRCHECK(xrEnumerateSwapchainImages(c.chain, imageCount, &imageCount, (XrSwapchainImageBaseHeader *)c.images.data())))
 			return false;
-		// Depth with stencil: the renderer uses stencil for modifier volumes (shadows).
-		glGenRenderbuffers(1, &c.depthStencil);
-		glBindRenderbuffer(GL_RENDERBUFFER, c.depthStencil);
-		glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, c.width, c.height);
+		// Smooth edges (vr.Msaa, off by default): multisampled where the GPU resolves it as it
+		// writes the picture out of its tile memory (GL_EXT_multisampled_render_to_texture: the
+		// Quest). Elsewhere (PCVR) without, for now.
+		int samples = 1;
+		if (config::VrMsaa > 1 && GLAD_GL_EXT_multisampled_render_to_texture)
+		{
+			GLint most = 0;
+			glGetIntegerv(GL_MAX_SAMPLES_EXT, &most);
+			samples = std::clamp((int)config::VrMsaa, 1, std::max((int)most, 1));
+		}
 		c.fbos.resize(imageCount);
 		glGenFramebuffers(imageCount, c.fbos.data());
-		for (u32 j = 0; j < imageCount; j++)
+		for (;;)
 		{
-			glBindFramebuffer(GL_FRAMEBUFFER, c.fbos[j]);
-			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c.images[j].image, 0);
-			glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, c.depthStencil);
-			if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+			// Depth with stencil: the renderer uses stencil for modifier volumes (shadows).
+			glGenRenderbuffers(1, &c.depthStencil);
+			glBindRenderbuffer(GL_RENDERBUFFER, c.depthStencil);
+			if (samples > 1)
+				glRenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, samples, GL_DEPTH24_STENCIL8, c.width, c.height);
+			else
+				glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, c.width, c.height);
+			bool complete = true;
+			for (u32 j = 0; j < imageCount && complete; j++)
+			{
+				glBindFramebuffer(GL_FRAMEBUFFER, c.fbos[j]);
+				if (samples > 1)
+					glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c.images[j].image, 0, samples);
+				else
+					glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c.images[j].image, 0);
+				glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, c.depthStencil);
+				complete = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+			}
+			if (complete)
+				break;
+			glDeleteRenderbuffers(1, &c.depthStencil);
+			c.depthStencil = 0;
+			if (samples == 1)
 			{
 				ERROR_LOG(RENDERER, "XR: eye framebuffer incomplete");
 				return false;
 			}
+			WARN_LOG(RENDERER, "XR: no eye framebuffer with %dx MSAA, without then", samples);
+			samples = 1;
 		}
+		c.samples = samples;
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	}
-	NOTICE_LOG(RENDERER, "XR: eye buffers %dx%d", chains[0].width, chains[0].height);
+	NOTICE_LOG(RENDERER, "XR: eye buffers %dx%d, %s", chains[0].width, chains[0].height,
+			chains[0].samples > 1 ? (std::to_string(chains[0].samples) + "x MSAA").c_str() : "no MSAA");
 	return true;
 }
 
