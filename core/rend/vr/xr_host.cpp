@@ -63,6 +63,10 @@ extern JavaVM *g_jvm;
 extern jobject g_activity;
 #endif
 
+#ifdef __ANDROID__
+std::string getFilesPath();		// the app's internal files directory (Android.cpp)
+#endif
+
 namespace vr::xr
 {
 namespace
@@ -154,6 +158,7 @@ Gun guns[2] { { 0 }, { 1, Left } };
 bool dualWield;
 XrTime dualSince;
 bool leftStartWas, recenterWas, laserWas;
+bool ringDumpRequested;		// X held: the frame ring (debug aid) is to be written
 // A game (re)started: one gun again (EventManager calls on the emulator's thread).
 std::atomic<bool> newGame;
 struct NewGameRegistration
@@ -1382,6 +1387,21 @@ void updateLightgun(XrTime time)
 	if (recenter && !recenterWas)
 		recenterRequested = true;
 	recenterWas = recenter;
+	// X held for 1.5 s: write the frame ring (the debug aid, when it's on), with a tick
+	{
+		static XrTime heldSince;
+		static bool dumped;
+		if (!recenter)
+			heldSince = 0, dumped = false;
+		else if (heldSince == 0)
+			heldSince = time;
+		else if (!dumped && time - heldSince > 1'500'000'000LL)
+		{
+			dumped = true;
+			ringDumpRequested = true;
+			haptic(Left, 0.08f, 0.8f);
+		}
+	}
 	// the right thumbstick click: the laser line and dot off or on, kept in emu.cfg (the line
 	// going or coming back says it; a tick in the hand too)
 	const bool laser = boolAction(laserAction);
@@ -1587,19 +1607,120 @@ static void writeOverlayList(const std::string& path, const glm::vec2& gun)
 //    (the console's video output in VRAM) and scene.txt (3D triangles);
 //  "touch files/capture-shot.request": at the next trigger pull, 8 frames in a row to
 //    files/shot1..8.ppm (half size) with the 2D polygons of each in shot1..8.txt.
-void captureIfRequested(GLuint fbo, int width, int height)
+// Where the debug aids look for their request files and write their output: on the Quest
+// the app's internal files directory (adb's run-as can write there, the data directory on
+// the shared storage it can't), on the PC the data directory.
+static const std::string& debugDir()
 {
 	static std::string dir;
 	if (dir.empty())
 	{
-		// the app's internal files directory, from the game path we were started with (when
-		// it's in there), else the data directory
-		const std::string& game = settings.content.path;
-		const size_t at = game.find("/files/");
-		dir = at != std::string::npos ? game.substr(0, at + 6) : get_writable_data_path("");
+#ifdef __ANDROID__
+		dir = getFilesPath();
+#else
+		dir = get_writable_data_path("");
+#endif
 		if (!dir.empty() && (dir.back() == '/' || dir.back() == '\\'))
 			dir.pop_back();
 	}
+	return dir;
+}
+
+// Debug aid: the last 1.5 s of left-eye frames at a quarter size, kept in memory, written
+// out as ring/NNN.ppm (oldest first) with ring/index.txt (number, ms, 1 when a game frame
+// was shown) when "ring.request" appears in the debug directory: a glitch of one frame can
+// be found afterwards. On only while "ring.enable" is there at the first frame: it costs a
+// blit and a readback every frame.
+static void ringCapture(GLuint fbo, int width, int height, bool gameFrame)
+{
+	constexpr size_t Frames = 216;		// 3 s at 72 Hz
+	static int enabled = -1;
+	static GLuint ringFbo, ringTex;
+	static int w, h;
+	static std::vector<u8> frames;
+	static std::vector<int64_t> stamps;
+	static std::vector<u8> flags;
+	static size_t count, next;
+	const std::string& dir = debugDir();
+	if (enabled < 0)
+	{
+		enabled = file_exists(dir + "/ring.enable") ? 1 : 0;
+		if (!enabled)
+			return;
+		w = width / 4;
+		h = height / 4;
+		glGenTextures(1, &ringTex);
+		glcache.BindTexture(GL_TEXTURE_2D, ringTex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glcache.BindTexture(GL_TEXTURE_2D, 0);
+		glGenFramebuffers(1, &ringFbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, ringFbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ringTex, 0);
+		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		{
+			WARN_LOG(RENDERER, "XR: no framebuffer for the frame ring");
+			enabled = 0;
+			return;
+		}
+		frames.resize(Frames * (size_t)w * h * 4);
+		stamps.resize(Frames);
+		flags.resize(Frames);
+		NOTICE_LOG(RENDERER, "XR: frame ring on: the last %zu frames at %dx%d, ring.request writes them", Frames, w, h);
+	}
+	if (!enabled)
+		return;
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ringFbo);
+	glBlitFramebuffer(0, 0, width, height, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, ringFbo);
+	glPixelStorei(GL_PACK_ALIGNMENT, 1);
+	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, &frames[next * (size_t)w * h * 4]);
+	stamps[next] = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	flags[next] = gameFrame;
+	next = (next + 1) % Frames;
+	count = std::min(count + 1, Frames);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+	// (polled every 16th frame: a file check a frame adds up; X held asks at once)
+	static u32 polls;
+	const std::string request = dir + "/ring.request";
+	const bool asked = ringDumpRequested || (polls++ % 16 == 0 && file_exists(request));
+	if (!asked)
+		return;
+	ringDumpRequested = false;
+	nowide::remove(request.c_str());
+	make_directory(dir + "/ring");
+	FILE *idx = fopen((dir + "/ring/index.txt").c_str(), "w");
+	std::vector<u8> rgb((size_t)w * h * 3);
+	for (size_t k = 0; k < count; k++)
+	{
+		const size_t slot = (next + Frames - count + k) % Frames;
+		const u8 *px = &frames[slot * (size_t)w * h * 4];
+		u8 *out = rgb.data();
+		for (int row = 0; row < h; row++)
+			for (int col = 0; col < w; col++, out += 3)
+				memcpy(out, &px[((size_t)(h - 1 - row) * w + col) * 4], 3);
+		char name[64];
+		snprintf(name, sizeof(name), "/ring/%03zu.ppm", k);
+		if (FILE *f = fopen((dir + name).c_str(), "wb"))
+		{
+			fprintf(f, "P6\n%d %d\n255\n", w, h);
+			fwrite(rgb.data(), 1, rgb.size(), f);
+			fclose(f);
+		}
+		if (idx != nullptr)
+			fprintf(idx, "%03zu %lld %d\n", k, (long long)stamps[slot], (int)flags[slot]);
+	}
+	if (idx != nullptr)
+		fclose(idx);
+	NOTICE_LOG(RENDERER, "XR: wrote the last %zu frames to %s/ring", count, dir.c_str());
+}
+
+void captureIfRequested(GLuint fbo, int width, int height)
+{
+	const std::string& dir = debugDir();
 	static bool shotArmed;
 	static u32 armedSerial;
 	static int shotFrame = -1;
@@ -1935,6 +2056,21 @@ bool frame()
 			glcache.Disable(GL_SCISSOR_TEST);
 			glcache.ClearColor(0.f, 0.f, 0.f, 1.f);
 			glClear(GL_COLOR_BUFFER_BIT);
+			// (a black frame between game frames would be a flicker: counted, every 10 s)
+			static u32 blackFrames;
+			static std::chrono::steady_clock::time_point since;
+			if (i == 0)
+			{
+				blackFrames++;
+				const auto now = std::chrono::steady_clock::now();
+				if (now - since > std::chrono::seconds(10))
+				{
+					if (since != std::chrono::steady_clock::time_point())
+						NOTICE_LOG(RENDERER, "XR: %u black frames (no game frame to show) in the last 10 s", blackFrames);
+					since = now;
+					blackFrames = 0;
+				}
+			}
 		}
 		if (!showPanel && (guns[0].visible || guns[1].visible))
 		{
@@ -1959,7 +2095,10 @@ bool frame()
 				}
 		}
 		if (i == 0)
+		{
 			captureIfRequested(c.fbos[index], c.width, c.height);
+			ringCapture(c.fbos[index], c.width, c.height, !showPanel && gles_vr_have_frame());
+		}
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		XrSwapchainImageReleaseInfo release { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		if (!XRCHECK(xrReleaseSwapchainImage(c.chain, &release)))

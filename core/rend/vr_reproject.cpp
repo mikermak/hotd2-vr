@@ -1325,10 +1325,14 @@ static void clipFarOut(rend_context& ctx, std::vector<PolyParam>& list, u32 from
 		for (int k = 0; k < 16; k++)
 			p.cz[k] = c[k / 4][k % 4] * p.z;
 	};
-	auto store = [](const P& p, Vertex& v) {
+	auto store = [hudW](const P& p, Vertex& v) {
 		v.x = (float)p.x;
 		v.y = (float)p.y;
 		v.z = (float)p.z;
+		// (a new corner landing at the 2D plane's W would be pinned onto the plane by the
+		// headset's vertex shader: a hair off it, as keepMixedIn3D does)
+		if (v.z > 0.f && std::abs(1.f / v.z - hudW) < 0.002f)
+			v.z = 1.f / (1.f / v.z < hudW ? hudW - 0.0025f : hudW + 0.0025f);
 		const double z = p.z > 1e-30 ? p.z : 1e-30;
 		v.u = (float)(p.uz[0] / z);
 		v.v = (float)(p.uz[1] / z);
