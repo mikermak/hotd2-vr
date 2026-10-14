@@ -1293,6 +1293,159 @@ static void ripRequested(const rend_context& ctx, const RenderPass& pass, const 
 	NOTICE_LOG(RENDERER, "VR: ripped pass %u (%u to go)", n, left);
 }
 
+// The game's clamped near-plane corners. A vertex behind or right at its camera isn't
+// clipped by HOTD2: its W is pinned (to 0.001; The Maze of the Kings: 1.0) and its x and y
+// shoot off to millions of pixels. On a TV such a polygon is at most a sliver at the edge of
+// the screen: the hardware fills its screen-space triangle, 1/W linear across it. Lifted into
+// 3D the pinned corner lands thousands of units to the side at the eyes' depth, and from a
+// head that moved, or a view three times wider, the sliver is a wedge across the room, or a
+// zombie's arm torn in two for a frame (5% of HOTD2's polygons, in two thirds of its frames:
+// the floor under the camera, walls beside it, enemies in your face). So the polygon is
+// clipped in screen space as the hardware does, to a box twice the screen (the 2D plane's
+// layers: to the screen), 1/W and u/W, v/W, colour/W linear: the new corners are what the
+// TV would show there. The pieces go into a new strip at the end of the vertex list, NaN
+// vertices between them (makePrimRestartIndex splits a strip there; a piece starts at an
+// even position, which keeps the culling parity).
+static void clipFarOut(rend_context& ctx, std::vector<PolyParam>& list, u32 from, u32 to, float hudW,
+		int fbWidth, int fbHeight, u32& clippedPolys)
+{
+	struct P {
+		double x, y, z;			// screen pixels, 1/W
+		double uz[4];			// u, v, u1, v1 times z
+		double cz[16];			// col, spc, col1, spc1 times z
+	};
+	auto load = [](const Vertex& v, P& p) {
+		p.x = v.x;
+		p.y = v.y;
+		p.z = v.z;
+		const float uv[4] = { v.u, v.v, v.u1, v.v1 };
+		for (int k = 0; k < 4; k++)
+			p.uz[k] = uv[k] * p.z;
+		const u8 *c[4] = { v.col, v.spc, v.col1, v.spc1 };
+		for (int k = 0; k < 16; k++)
+			p.cz[k] = c[k / 4][k % 4] * p.z;
+	};
+	auto store = [](const P& p, Vertex& v) {
+		v.x = (float)p.x;
+		v.y = (float)p.y;
+		v.z = (float)p.z;
+		const double z = p.z > 1e-30 ? p.z : 1e-30;
+		v.u = (float)(p.uz[0] / z);
+		v.v = (float)(p.uz[1] / z);
+		v.u1 = (float)(p.uz[2] / z);
+		v.v1 = (float)(p.uz[3] / z);
+		u8 *c[4] = { v.col, v.spc, v.col1, v.spc1 };
+		for (int k = 0; k < 16; k++)
+			c[k / 4][k % 4] = (u8)std::clamp((int)std::lround(p.cz[k] / z), 0, 255);
+	};
+	auto lerp = [](const P& a, const P& b, double t, P& o) {
+		o.x = a.x + (b.x - a.x) * t;
+		o.y = a.y + (b.y - a.y) * t;
+		o.z = a.z + (b.z - a.z) * t;
+		for (int k = 0; k < 4; k++)
+			o.uz[k] = a.uz[k] + (b.uz[k] - a.uz[k]) * t;
+		for (int k = 0; k < 16; k++)
+			o.cz[k] = a.cz[k] + (b.cz[k] - a.cz[k]) * t;
+	};
+	// Sutherland-Hodgman against one edge of the box: inside is side * coord <= side * bound
+	auto clipEdge = [&](const std::vector<P>& in, std::vector<P>& out, int axis, double bound, double side) {
+		out.clear();
+		const size_t n = in.size();
+		for (size_t i = 0; i < n; i++)
+		{
+			const P& a = in[i];
+			const P& b = in[(i + 1) % n];
+			const double da = side * ((axis == 0 ? a.x : a.y) - bound);	// > 0: outside
+			const double db = side * ((axis == 0 ? b.x : b.y) - bound);
+			if (da <= 0)
+				out.push_back(a);
+			if ((da <= 0) != (db <= 0))
+			{
+				P m;
+				lerp(a, b, da / (da - db), m);
+				if (axis == 0)
+					m.x = bound;
+				else
+					m.y = bound;
+				out.push_back(m);
+			}
+		}
+	};
+	std::vector<P> poly, tmp;
+	const Vertex nan = [] { Vertex v {}; v.x = v.y = std::numeric_limits<float>::quiet_NaN(); return v; }();
+	for (u32 n = from; n < to && n < list.size(); n++)
+	{
+		PolyParam& pp = list[n];
+		if (pp.count < 3 || pp.first + pp.count > ctx.verts.size())
+			continue;
+		bool onPlane = true, farOut = false, finite = true;
+		for (u32 i = pp.first; i < pp.first + pp.count; i++)
+		{
+			const Vertex& v = ctx.verts[i];
+			if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
+			{
+				finite = false;
+				break;
+			}
+			onPlane = onPlane && onOverlay(v, hudW);
+		}
+		if (!finite)
+			continue;
+		const double x0 = onPlane ? 0.0 : -fbWidth * 0.5, x1 = onPlane ? fbWidth : fbWidth * 1.5;
+		const double y0 = onPlane ? 0.0 : -fbHeight * 0.5, y1 = onPlane ? fbHeight : fbHeight * 1.5;
+		// (3D reaching up to two screens out is real geometry beside the view, lifted fine as
+		// it is: only what reaches further is cut, the pinned corners are at thousands)
+		const double reach = onPlane ? 0.0 : fbWidth * 1.5;
+		for (u32 i = pp.first; i < pp.first + pp.count && !farOut; i++)
+		{
+			const Vertex& v = ctx.verts[i];
+			farOut = v.x < x0 - reach || v.x > x1 + reach || v.y < y0 - reach || v.y > y1 + reach;
+		}
+		if (!farOut)
+			continue;
+		clippedPolys++;
+		const u32 start = (u32)ctx.verts.size();
+		for (u32 i = 0; i + 2 < pp.count; i++)
+		{
+			poly.resize(3);
+			// a strip's odd triangles face the other way: in the order their facing means
+			for (int k = 0; k < 3; k++)
+				load(ctx.verts[pp.first + i + ((i & 1) ? 2 - k : k)], poly[k]);
+			clipEdge(poly, tmp, 0, x0, -1.0);
+			clipEdge(tmp, poly, 0, x1, 1.0);
+			clipEdge(poly, tmp, 1, y0, -1.0);
+			clipEdge(tmp, poly, 1, y1, 1.0);
+			if (poly.size() < 3)
+				continue;
+			// a new piece at an even position, after a NaN
+			if (ctx.verts.size() > start)
+			{
+				ctx.verts.push_back(nan);
+				if ((ctx.verts.size() - start) & 1)
+					ctx.verts.push_back(nan);
+			}
+			// the convex piece as a strip: 0, 1, n-1, 2, n-2, ... keeps its winding
+			const size_t m = poly.size();
+			size_t lo = 1, hi = m - 1;
+			ctx.verts.push_back(ctx.verts[pp.first]);
+			store(poly[0], ctx.verts.back());
+			for (size_t k = 1; k < m; k++)
+			{
+				const size_t which = (k & 1) ? lo++ : hi--;
+				ctx.verts.push_back(ctx.verts[pp.first]);
+				store(poly[which], ctx.verts.back());
+			}
+		}
+		if (ctx.verts.size() == start)
+			hideVertices(ctx, pp);		// nothing of it in the box
+		else
+		{
+			pp.first = start;
+			pp.count = (u32)(ctx.verts.size() - start);
+		}
+	}
+}
+
 void dropShotMarker(rend_context& ctx, const RenderPass& pass, const RenderPass& previousPass)
 {
 	// (Naomi 2 polygons are still in model space here, and aren't reprojected anyway)
@@ -1336,6 +1489,21 @@ void dropShotMarker(rend_context& ctx, const RenderPass& pass, const RenderPass&
 	cropPlaneToScreen(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight);
 	cropPlaneToScreen(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight);
 	cropPlaneToScreen(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight);
+	// last: what's left reaching far outside the screen is cut to a box around it
+	{
+		static u32 clippedTotal, clipParses;
+		u32 clipped = 0;
+		clipFarOut(ctx, ctx.global_param_op, std::max(previousPass.op_count, 1u), pass.op_count, hudW, fbWidth, fbHeight, clipped);
+		clipFarOut(ctx, ctx.global_param_pt, previousPass.pt_count, pass.pt_count, hudW, fbWidth, fbHeight, clipped);
+		clipFarOut(ctx, ctx.global_param_tr, previousPass.tr_count, pass.tr_count, hudW, fbWidth, fbHeight, clipped);
+		clippedTotal += clipped;
+		if (++clipParses % 600 == 0 && clippedTotal > 0)
+		{
+			NOTICE_LOG(RENDERER, "VR: clipped %u polygons reaching far outside the screen in the last %u passes", clippedTotal, clipParses);
+			clippedTotal = 0;
+			clipParses = 0;
+		}
+	}
 
 	// the recent shots, in DC framebuffer pixels
 	struct Recent { glm::vec2 gun; int64_t since, at; bool into3D; };
