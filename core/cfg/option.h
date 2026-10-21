@@ -472,6 +472,7 @@ extern Option<bool> VrWiden;
 extern Option<float> VrWorldScale;
 extern Option<float> VrXrResolution;
 extern Option<int> VrMsaa;
+extern Option<bool> VrColorCorrection;
 extern Option<int> VrXrRefreshRate;
 extern Option<bool> VrLaser;
 extern Option<bool> VrShowGun;

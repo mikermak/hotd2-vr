@@ -105,6 +105,7 @@ Option<bool> VrWiden("vr.Widen", true);		// let the game profile widen the view 
 Option<float> VrWorldScale("vr.WorldScale", 0.11f);	// metres per game unit (HOTD2's camera rides 15 units over the street: eye height)
 Option<float> VrXrResolution("vr.XrResolution", 1.f);	// eye buffer size, times the recommended size
 Option<int> VrMsaa("vr.Msaa", 1);		// smooth edges: multisampling, e.g. 4 (the Quest only; 1: off)
+Option<bool> VrColorCorrection("vr.ColorCorrection", true); // sRGB eye images for the Dreamcast's display-encoded colours; restart to change
 Option<int> VrXrRefreshRate("vr.XrRefreshRate", 72);	// Hz
 Option<bool> VrLaser("vr.Laser", true);		// aim line and dot from the gun
 Option<bool> VrShowGun("vr.ShowGun", true);	// a gun in the shooting hand

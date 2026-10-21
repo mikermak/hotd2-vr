@@ -75,8 +75,9 @@ namespace
 #ifdef __ANDROID__
 using SwapchainImage = XrSwapchainImageOpenGLESKHR;
 constexpr XrStructureType SwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
-// Plain RGBA8: the game's colours were made for a gamma display, like the eye buffers.
-constexpr int64_t SwapchainFormats[] { GL_RGBA8 };
+// Dreamcast colours are already display-encoded. Tell the compositor to decode sRGB,
+// while disabling GLES's extra write conversion during each eye's render below.
+constexpr int64_t SwapchainFormats[] { GL_SRGB8_ALPHA8, GL_RGBA8 };
 #else
 using SwapchainImage = XrSwapchainImageOpenGLKHR;
 constexpr XrStructureType SwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
@@ -361,13 +362,25 @@ bool initSwapchains()
 		return false;
 	int64_t format = 0;
 	for (int64_t wanted : SwapchainFormats)
+	{
+#ifdef __ANDROID__
+		// Without write control, GLES would encode the already-encoded game colours again.
+		if (wanted == GL_SRGB8_ALPHA8 && (!config::VrColorCorrection || !GLAD_GL_EXT_sRGB_write_control))
+			continue;
+#endif
 		if (format == 0 && std::find(formats.begin(), formats.end(), wanted) != formats.end())
 			format = wanted;
+	}
 	if (format == 0)
 	{
 		ERROR_LOG(RENDERER, "XR: no RGBA8 swapchain format");
 		return false;
 	}
+	NOTICE_LOG(RENDERER, "XR: eye colour format %s", format == GL_SRGB8_ALPHA8 ? "sRGB" : "linear RGBA8");
+#ifdef __ANDROID__
+	if (config::VrColorCorrection && format != GL_SRGB8_ALPHA8)
+		WARN_LOG(RENDERER, "XR: sRGB colour correction unavailable; using the original colour path");
+#endif
 	u32 viewCount = 0;
 	if (!XRCHECK(xrEnumerateViewConfigurationViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &viewCount, nullptr))
 			|| viewCount != 2)
@@ -2032,6 +2045,13 @@ bool frame()
 		const glm::mat4 view = glm::inverse(glm::translate(glm::mat4(1.f), relativePosition(views[i].pose.position))
 				* glm::mat4_cast(relativeRotation(views[i].pose.orientation)));
 		eye = { c.fbos[index], c.width, c.height, eyeProjection(views[i].fov) * view * gameToWorld() };
+#ifdef __ANDROID__
+		// Preserve the original game's blending and encoded pixel values. OpenXR decodes
+		// the sRGB image once when compositing it for the display.
+		const bool srgbWriteWasEnabled = GLAD_GL_EXT_sRGB_write_control && glIsEnabled(GL_FRAMEBUFFER_SRGB_EXT);
+		if (GLAD_GL_EXT_sRGB_write_control)
+			glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+#endif
 		if (showPanel)
 		{
 			// a dark room with the panel in it
@@ -2100,6 +2120,10 @@ bool frame()
 			ringCapture(c.fbos[index], c.width, c.height, !showPanel && gles_vr_have_frame());
 		}
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#ifdef __ANDROID__
+		if (srgbWriteWasEnabled)
+			glEnable(GL_FRAMEBUFFER_SRGB_EXT);
+#endif
 		XrSwapchainImageReleaseInfo release { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		if (!XRCHECK(xrReleaseSwapchainImage(c.chain, &release)))
 		{
