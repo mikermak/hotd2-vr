@@ -222,6 +222,13 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
         Intent panel = new Intent(getApplicationContext(), VrSetupActivity.class);
         panel.setAction(Intent.ACTION_MAIN);
         panel.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        // Only Meta's home knows the extra. Another headset's home (the Steam Frame's is a
+        // plain Android launcher) starts without complaint and never shows the panel.
+        if (!isMetaHeadset()) {
+            startActivity(panel);
+            finish();
+            return;
+        }
         try {
             android.app.PendingIntent pending = android.app.PendingIntent.getActivity(getApplicationContext(), 0, panel,
                     android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
@@ -235,6 +242,11 @@ public abstract class BaseGLActivity extends Activity implements ActivityCompat.
             startActivity(panel);
         }
         finish();
+    }
+
+    private static boolean isMetaHeadset()
+    {
+        return "Oculus".equalsIgnoreCase(Build.MANUFACTURER) || "Meta".equalsIgnoreCase(Build.MANUFACTURER);
     }
 
     private void setStorageDirectories()
