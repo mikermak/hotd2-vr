@@ -52,6 +52,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <iterator>
 #include <cstring>
 #include <string>
@@ -76,7 +77,9 @@ namespace
 using SwapchainImage = XrSwapchainImageOpenGLESKHR;
 constexpr XrStructureType SwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
 // Plain RGBA8: the game's colours were made for a gamma display, like the eye buffers.
-constexpr int64_t SwapchainFormats[] { GL_RGBA8 };
+// SteamVR's Android runtime (Steam Frame) offers no RGBA8, only sRGB: written to as it is
+// (sRGB writes off, GL_EXT_sRGB_write_control) it shows the same colours, as on the PC.
+constexpr int64_t SwapchainFormats[] { GL_RGBA8, GL_SRGB8_ALPHA8 };
 #else
 using SwapchainImage = XrSwapchainImageOpenGLKHR;
 constexpr XrStructureType SwapchainImageType = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
@@ -365,9 +368,27 @@ bool initSwapchains()
 			format = wanted;
 	if (format == 0)
 	{
-		ERROR_LOG(RENDERER, "XR: no RGBA8 swapchain format");
+		std::string offered;
+		for (int64_t f : formats)
+		{
+			char hex[24];
+			snprintf(hex, sizeof(hex), " 0x%llx", (unsigned long long)f);
+			offered += hex;
+		}
+		ERROR_LOG(RENDERER, "XR: no RGBA8 swapchain format, the runtime offers:%s", offered.c_str());
 		return false;
 	}
+#ifdef __ANDROID__
+	if (format == GL_SRGB8_ALPHA8)
+	{
+		// what goes into the sRGB eye images goes in as it is (see SwapchainFormats)
+		const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+		if (extensions != nullptr && strstr(extensions, "GL_EXT_sRGB_write_control") != nullptr)
+			glDisable(GL_FRAMEBUFFER_SRGB);
+		else
+			WARN_LOG(RENDERER, "XR: sRGB eye images without GL_EXT_sRGB_write_control, the colours will be too bright");
+	}
+#endif
 	u32 viewCount = 0;
 	if (!XRCHECK(xrEnumerateViewConfigurationViews(instance, systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &viewCount, nullptr))
 			|| viewCount != 2)
