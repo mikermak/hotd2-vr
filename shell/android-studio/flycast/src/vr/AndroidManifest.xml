@@ -34,18 +34,24 @@
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
         <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
 
-        <!-- launch in VR; also openable with a game file, as the regular app -->
-        <activity-alias
-            android:name="com.flycast.emulator.MainActivity"
-            android:targetActivity="com.flycast.emulator.NativeGLActivity"
-            android:exported="true"
-            tools:node="replace">
+        <!-- launch in VR. On the activity itself, not on the alias: Horizon OS (v210) follows
+             the alias to its activity and looks for the VR category there; without it the app
+             opens as a window in MR Home, with its passthrough over the game. -->
+        <activity android:name="com.flycast.emulator.NativeGLActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="com.oculus.intent.category.VR" />
                 <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
             </intent-filter>
+        </activity>
+
+        <!-- also openable with a game file, as the regular app -->
+        <activity-alias
+            android:name="com.flycast.emulator.MainActivity"
+            android:targetActivity="com.flycast.emulator.NativeGLActivity"
+            android:exported="true"
+            tools:node="replace">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
